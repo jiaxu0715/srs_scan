@@ -47,7 +47,7 @@ class Olympus:
         self.dry_run = dry_run
         self.proxy = None if dry_run else xmlrpc.client.ServerProxy(url)
 
-    def get_parameter(self, setting_id: str) -> dict:
+    def get_param(self, setting_id: str) -> dict:
         """Return Parameter.getParameter payload without the ``result`` key."""
         if self.dry_run:
             print(f"[dry-run] getParameter {setting_id}")
@@ -66,7 +66,7 @@ class Olympus:
             )
         return {key: val for key, val in response.items() if key != "result"}
 
-    def set_parameter(self, setting_id: str, **kwargs) -> None:
+    def set_param(self, setting_id: str, **kwargs) -> None:
         """Call Parameter.setParameter; raise if Olympus does not return OK.
 
         Pass extra fields as kwargs using Olympus camelCase names
