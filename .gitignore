@@ -4,6 +4,7 @@
 .DS_Store
 *.xlsm
 hf2.ipynb
+ape_device_debug.py
 
 
 # Byte-compiled / optimized / DLL files
