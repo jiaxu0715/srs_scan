@@ -29,7 +29,7 @@ from parameter_dialog import load_json
 from scan_pipeline import run_pipeline
 
 # Default recipe when no --config is passed.
-DEFAULT_CONFIG = Path(__file__).resolve().parent / "config.json"
+DEFAULT_CONFIG = Path(__file__).resolve().parent / "config" /"config.json"
 
 
 def _load_params(*, config: Path | None, gui: bool) -> dict | None:
