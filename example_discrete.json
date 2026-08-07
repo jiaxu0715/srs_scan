@@ -1,0 +1,12 @@
+{
+  "_about": "Example discrete config: one MATL Z-stack acquisition per wavelength row.",
+  "mode": "discrete",
+  "sample_name": "mouse_7wk_islet1",
+  "imaging_time": 0,
+  "comment": "",
+  "scans": [
+    {"wavelength": 787.0, "opo_power": 150, "ir_power": 200},
+    {"wavelength": 794.0, "opo_power": 150, "ir_power": 200},
+    {"wavelength": 800.0, "opo_power": 150, "ir_power": 200}
+  ]
+}
