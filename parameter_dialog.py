@@ -34,14 +34,23 @@ def validate(params: dict) -> dict:
         "sample_name": sample,
         "imaging_time": float(params.get("imaging_time", 0) or 0),
         "comment": str(params.get("comment", "") or ""),
+        "power_tol": float(params["power_tol"]) if "power_tol" in params else 0.10,
     }
+    if out["power_tol"] < 0:
+        raise ValueError("power_tol must be >= 0")
     if mode == "sweep":
         start = float(params["start_wavelength"])
         end = float(params["end_wavelength"])
         step = float(params["step_size"])
         if step <= 0 or end < start:
             raise ValueError("invalid sweep range/step")
-        out.update(start_wavelength=start, end_wavelength=end, step_size=step)
+        out.update(
+            start_wavelength=start,
+            end_wavelength=end,
+            step_size=step,
+            opo_power=float(params["opo_power"]),
+            ir_power=float(params["ir_power"]),
+        )
     else:
         scans = params.get("scans") or []
         if not scans:
@@ -107,34 +116,48 @@ class ParameterDialog:
         self.start = tk.StringVar(value="787.0")
         self.end = tk.StringVar(value="800.0")
         self.step = tk.StringVar(value="0.5")
+        self.power_tol = tk.StringVar(value="0.10")
+        self.opo_power = tk.StringVar(value="150")
+        self.ir_power = tk.StringVar(value="200")
 
         for i, (label, var) in enumerate(
-            (("Sample name", self.sample), ("Imaging time (s)", self.imaging), ("Comment", self.comment))
+            (
+                ("Sample name", self.sample),
+                ("Imaging time (s)", self.imaging),
+                ("Comment", self.comment),
+                ("Power tol (frac)", self.power_tol),
+            )
         ):
             ttk.Label(frm, text=label).grid(row=i, column=0, sticky="w", **pad)
             ttk.Entry(frm, textvariable=var, width=28).grid(row=i, column=1, **pad)
 
-        ttk.Label(frm, text="Mode").grid(row=3, column=0, sticky="w", **pad)
+        ttk.Label(frm, text="Mode").grid(row=4, column=0, sticky="w", **pad)
         box = ttk.Combobox(frm, textvariable=self.mode, values=("sweep", "discrete"), state="readonly")
-        box.grid(row=3, column=1, sticky="ew", **pad)
+        box.grid(row=4, column=1, sticky="ew", **pad)
         box.bind("<<ComboboxSelected>>", lambda _e: self._toggle())
 
         self.sweep = ttk.LabelFrame(frm, text="Sweep", padding=8)
-        self.sweep.grid(row=4, column=0, columnspan=2, sticky="ew", **pad)
+        self.sweep.grid(row=5, column=0, columnspan=2, sticky="ew", **pad)
         for i, (label, var) in enumerate(
-            (("Start λ (nm)", self.start), ("End λ (nm)", self.end), ("Step (nm)", self.step))
+            (
+                ("Start λ (nm)", self.start),
+                ("End λ (nm)", self.end),
+                ("Step (nm)", self.step),
+                ("OPO power", self.opo_power),
+                ("IR power", self.ir_power),
+            )
         ):
             ttk.Label(self.sweep, text=label).grid(row=i, column=0, sticky="w", **pad)
             ttk.Entry(self.sweep, textvariable=var, width=20).grid(row=i, column=1, **pad)
 
         self.discrete = ttk.LabelFrame(frm, text="Discrete (λ, opo, ir per line)", padding=8)
-        self.discrete.grid(row=5, column=0, columnspan=2, sticky="ew", **pad)
+        self.discrete.grid(row=6, column=0, columnspan=2, sticky="ew", **pad)
         self.scans = tk.Text(self.discrete, width=40, height=6)
         self.scans.grid(**pad)
         self.scans.insert("1.0", "787.0, 150, 200\n794.0, 150, 200\n")
 
         btns = ttk.Frame(frm)
-        btns.grid(row=6, column=0, columnspan=2, **pad)
+        btns.grid(row=7, column=0, columnspan=2, **pad)
         ttk.Button(btns, text="Cancel", command=self._cancel).grid(row=0, column=0, **pad)
         ttk.Button(btns, text="Start", command=lambda: self._ok(messagebox)).grid(row=0, column=1, **pad)
 
@@ -157,12 +180,15 @@ class ParameterDialog:
                 "sample_name": self.sample.get(),
                 "imaging_time": float(self.imaging.get() or 0),
                 "comment": self.comment.get(),
+                "power_tol": float(self.power_tol.get()),
             }
             if raw["mode"] == "sweep":
                 raw.update(
                     start_wavelength=float(self.start.get()),
                     end_wavelength=float(self.end.get()),
                     step_size=float(self.step.get()),
+                    opo_power=float(self.opo_power.get()),
+                    ir_power=float(self.ir_power.get()),
                 )
             else:
                 raw["scans"] = parse_scan_lines(self.scans.get("1.0", "end"))

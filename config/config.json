@@ -1,9 +1,10 @@
 {
-  "_about": "Multi-Z discrete scan. Z-stack depth/step live in the Olympus MATL protocol; this file only lists wavelengths and laser powers.",
+  "_about": "Multi-Z discrete scan. Z-stack depth/step live in the Olympus MATL protocol; this file only lists wavelengths and laser powers. power_tol is the allowed relative deviation of measured OPO/IR power from setpoints (0.10 = ±10%).",
   "mode": "discrete",
   "sample_name": "mouse_7wk_islet1",
   "imaging_time": 0,
   "comment": "",
+  "power_tol": 0.10,
   "scans": [
     {"wavelength": 787.0, "opo_power": 150, "ir_power": 200},
     {"wavelength": 794.0, "opo_power": 150, "ir_power": 200},

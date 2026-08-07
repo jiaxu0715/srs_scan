@@ -74,9 +74,29 @@ def _save_log(log: dict, comment: str = "", path: str | None = None) -> str:
         return out
 
 
-def _acquire_with_retry(laser, olympus, sample: str, status: str, log: dict, nm: float, on_retry=None) -> None:
+def _acquire_with_retry(
+    laser,
+    olympus,
+    sample: str,
+    status: str,
+    log: dict,
+    nm: float,
+    opo_setpoint,
+    ir_setpoint,
+    power_tol,
+    on_retry=None,
+) -> None:
     """Keep calling ``acquire_matl()`` until the laser was ready enough to start."""
-    while not acquire_matl(laser, olympus, sample, status, log):
+    while not acquire_matl(
+        laser,
+        olympus,
+        sample,
+        status,
+        log,
+        opo_setpoint,
+        ir_setpoint,
+        power_tol,
+    ):
         print(f"Retrying {nm:.1f} nm…")
         if on_retry:
             on_retry()
@@ -88,12 +108,17 @@ def run_sweep(laser: Laser, olympus: Olympus, params: dict, log: dict) -> None:
     end = params["end_wavelength"]
     step = params["step_size"]
     sample = params["sample_name"]
+    opo_setpoint = params["opo_power"]
+    ir_setpoint = params["ir_power"]
+    power_tol = params["power_tol"]
 
     # n intervals ⇒ n+1 visit points (same convention as the APE SWEEP= command).
     n = int((nm_to_tenths(end) - nm_to_tenths(start)) / (step * 10))
     delta = (end - start) / n if n else 0.0
     print(f"Sweep {start:g}–{end:g} nm, step {step:g} nm ({n + 1} points)")
 
+    laser.set_opo_power(opo_setpoint)
+    laser.set_ir_power(ir_setpoint)
     laser.sweep_config(start, end, n)
     laser.sweep_start()
 
@@ -104,7 +129,17 @@ def run_sweep(laser: Laser, olympus: Olympus, params: dict, log: dict) -> None:
             print(f"Skip step {i} ({nm:.1f} nm): status never hold")
             continue
         laser.set_delay_nm(nm)
-        _acquire_with_retry(laser, olympus, sample, "hold", log, nm)
+        _acquire_with_retry(
+            laser,
+            olympus,
+            sample,
+            "hold",
+            log,
+            nm,
+            opo_setpoint,
+            ir_setpoint,
+            power_tol,
+        )
         laser.sweep_next()
 
 
@@ -115,22 +150,38 @@ def run_discrete(laser: Laser, olympus: Olympus, params: dict, log: dict) -> Non
     executes the same Z-stack MATL protocol at every wavelength.
     """
     sample = params["sample_name"]
+    power_tol = params["power_tol"]
     for scan in tqdm(params["scans"]):
         nm = float(scan["wavelength"])
+        opo_setpoint = scan["opo_power"]
+        ir_setpoint = scan["ir_power"]
         laser.set_wavelength_nm(nm)
-        laser.set_opo_power(scan["opo_power"])
-        laser.set_ir_power(scan["ir_power"])
+        laser.set_opo_power(opo_setpoint)
+        laser.set_ir_power(ir_setpoint)
         laser.set_delay_nm(nm)
         if not laser.wait_status("OK"):
             print(f"Skip {nm} nm: status never OK")
             continue
 
         def reassert() -> None:
-            # Re-assert λ/delay in case a fault left the laser off-target.
+            # Re-assert λ/power/delay in case a fault left the laser off-target.
             laser.set_wavelength_nm(nm)
+            laser.set_opo_power(opo_setpoint)
+            laser.set_ir_power(ir_setpoint)
             laser.set_delay_nm(nm)
 
-        _acquire_with_retry(laser, olympus, sample, "OK", log, nm, on_retry=reassert)
+        _acquire_with_retry(
+            laser,
+            olympus,
+            sample,
+            "OK",
+            log,
+            nm,
+            opo_setpoint,
+            ir_setpoint,
+            power_tol,
+            on_retry=reassert,
+        )
 
 
 def run_pipeline(

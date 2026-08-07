@@ -25,6 +25,8 @@ import os
 import time
 import xmlrpc.client
 
+from laser_client import power_within_tol
+
 # Local Fluoview XML-RPC endpoint (Olympus must be running with the server enabled).
 DEFAULT_OLYMPUS_URL = "http://127.0.0.1:8080/xmlrpc"
 _MATL = {"executionType": "EXECUTION_TYPE_MATL"}
@@ -192,6 +194,9 @@ def acquire_matl(
     sample: str,
     target_status: str,
     log: dict,
+    opo_setpoint,
+    ir_setpoint,
+    power_tol,
     *,
     max_rescans: int = 3,
 ) -> bool:
@@ -199,6 +204,11 @@ def acquire_matl(
 
     *target_status* is ``"OK"`` in discrete (multi-λ / multi-Z) mode and
     ``"hold"`` during APE hardware sweeps.
+
+    *opo_setpoint* / *ir_setpoint* / *power_tol* come from the loaded scan
+    config. Measured OPO/IR power must stay within ±*power_tol* of those
+    setpoints at start and while MATL is scanning; otherwise the acquisition
+    is treated like a status fault and rescanned.
 
     Returns False only if the laser never reaches *target_status* (caller may
     retry the whole wavelength point). Otherwise returns True and tags .oir
@@ -212,13 +222,32 @@ def acquire_matl(
         log["OPO_WAVELENGTH"].append(laser.get_wavelength())
         return _numeric(log["OPO_power"][-1]) and _numeric(log["OPO_WAVELENGTH"][-1])
 
+    def powers_ok(opo, ir) -> bool:
+        """True if OPO and IR readouts are within tolerance of config setpoints."""
+        if getattr(laser, "dry_run", False) or olympus.dry_run:
+            return True
+        opo_ok = power_within_tol(opo, opo_setpoint, power_tol)
+        ir_ok = power_within_tol(ir, ir_setpoint, power_tol)
+        if opo_ok and ir_ok:
+            return True
+        print(
+            f"Power out of tol (±{float(power_tol):.0%}): "
+            f"OPO {opo!r} vs {opo_setpoint}, IR {ir!r} vs {ir_setpoint}"
+        )
+        return False
+
     def watch_for_fault() -> bool:
-        """True if the laser left *target_status* while MATL was still scanning."""
+        """True if status or power leaves the allowed band while MATL scans."""
         if olympus.dry_run:
             return False
         while olympus.scanning_matl():
             if laser.status() != target_status:
                 # Open shutter so the laser can retune (same as legacy STEP1).
+                laser.shutter(True)
+                return True
+            opo = laser.get_opo_power()
+            ir = laser.get_ir_power()
+            if not powers_ok(opo, ir):
                 laser.shutter(True)
                 return True
             time.sleep(2)
@@ -238,8 +267,11 @@ def acquire_matl(
 
         path = olympus.start_matl()
         valid = append_readouts()
-        laser.shutter(True)
-        interrupted = watch_for_fault()
+        if not powers_ok(log["OPO_power"][-1], log["IR_power"][-1]):
+            interrupted = True
+        else:
+            laser.shutter(True)
+            interrupted = watch_for_fault()
 
         if not interrupted or rescans >= max_rescans:
             break

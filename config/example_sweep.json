@@ -1,9 +1,12 @@
 {
-  "_about": "Example sweep config: APE hardware sweeps wavelength; Olympus acquires at each hold point.",
+  "_about": "Example sweep config: APE hardware sweeps wavelength; Olympus acquires at each hold point. opo_power/ir_power are set once and monitored within power_tol.",
   "mode": "sweep",
   "sample_name": "mouse_7wk_islet1",
   "imaging_time": 0,
   "comment": "",
+  "power_tol": 0.10,
+  "opo_power": 150,
+  "ir_power": 200,
   "start_wavelength": 787.0,
   "end_wavelength": 800.0,
   "step_size": 0.5

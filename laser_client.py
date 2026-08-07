@@ -40,6 +40,17 @@ def delay_abs(wavelength_nm: float) -> int:
     return int(DELAY_SLOPE * float(wavelength_nm) + DELAY_INTERCEPT)
 
 
+def power_within_tol(measured, setpoint, tol: float) -> bool:
+    """True if *measured* is within ±*tol* (relative) of *setpoint*."""
+    try:
+        m, s = float(measured), float(setpoint)
+    except (TypeError, ValueError):
+        return False
+    if s == 0:
+        return m == 0
+    return abs(m - s) / abs(s) <= float(tol)
+
+
 class Laser:
     """High-level picoEmerald API used by ``scan_pipeline`` and ``olympus_client``."""
 
