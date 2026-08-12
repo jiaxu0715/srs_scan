@@ -29,8 +29,10 @@ from datetime import datetime
 from laser_client import DEFAULT_HOST, DEFAULT_PORT, Laser, nm_to_tenths
 from mosaic import (
     build_mosaic_tiles,
+    collect_tiles_from_dir,
     collect_tiles_from_paths,
     field_um_from_zoom,
+    oir_stitch_deps_ok,
     stitch_tiles,
     tile_sample_name,
     write_tile_manifest,
@@ -210,22 +212,62 @@ def _acquire_mosaic(
         },
     )
     if olympus.dry_run:
-        print("[dry-run] skip stitch (no real .oir tiles)")
+        print("[dry-run] skip stitch (no real .oir tiles)", flush=True)
         return
-    if len(acquired) < len(tiles):
+
+    # Log paths may miss _r/_c_ if rename failed; fall back to directory scan.
+    existing = {rc: p for rc, p in acquired.items() if os.path.isfile(p)}
+    if len(existing) < len(tiles):
+        scanned = collect_tiles_from_dir(out_dir)
+        for rc, path in scanned.items():
+            if rc not in existing and os.path.isfile(path):
+                existing[rc] = path
+        if scanned:
+            print(
+                f"Stitch: log had {len(acquired)} named tiles, "
+                f"{len(existing)} readable after dir scan of {out_dir!r}",
+                flush=True,
+            )
+
+    if not existing:
         print(
-            f"Warning: acquired {len(acquired)}/{len(tiles)} tiles; "
-            "stitching available tiles only"
+            f"Stitch skipped: no mosaic-named tile files found under {out_dir!r}. "
+            f"Expected names containing _r{{row}}_c{{col}}_ (see {manifest}).",
+            flush=True,
         )
+        return
+    if len(existing) < len(tiles):
+        print(
+            f"Warning: only {len(existing)}/{len(tiles)} tiles on disk; "
+            "stitching available tiles only",
+            flush=True,
+        )
+
+    needs_oir = any(p.lower().endswith(".oir") for p in existing.values())
+    if needs_oir:
+        ok, detail = oir_stitch_deps_ok()
+        if not ok:
+            print(
+                f"Stitch skipped: cannot read .oir ({detail}). "
+                f"Tile paths are in {manifest}. "
+                "Install aicsimageio + bioformats_jar (Java required), or convert tiles to .tif.",
+                flush=True,
+            )
+            return
+
+    stitch_path = os.path.join(out_dir, f"{tag}_mosaic.tif")
+    print(f"Stitching {len(existing)} tiles → {stitch_path}", flush=True)
     try:
-        stitch_path = os.path.join(out_dir, f"{tag}_mosaic.tif")
         stitch_tiles(
-            acquired,
+            existing,
             overlap_fraction=params["overlap"],
             out_path=stitch_path,
         )
     except Exception as exc:
-        print(f"Stitch failed ({exc}); tile paths are in {manifest}")
+        import traceback
+
+        print(f"Stitch failed ({exc}); tile paths are in {manifest}", flush=True)
+        traceback.print_exc()
 
 
 def _acquire_point(

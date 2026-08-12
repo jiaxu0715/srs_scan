@@ -92,15 +92,16 @@ class Laser:
             return "OK" if command.upper() == "STATUS?" or not command.endswith("?") else "0"
         try:
             response = self.dev.query(command)
-        except Exception as exc:
+        except Exception:
             # Set-commands frequently time out with an empty reply (same as Excel VBA).
             if not command.endswith("?"):
-                print(f"laser ← {command!r} → (no reply / {exc})")
                 return "OK"
             raise
         if response == "" and not command.endswith("?"):
             response = "OK"
-        print(f"laser ← {command!r} → {response!r}")
+        # STATUS? is polled heavily while tuning; skip console spam.
+        if command.upper() != "STATUS?":
+            print(f"laser ← {command!r} → {response!r}")
         return response
 
     def status(self) -> str:
@@ -114,13 +115,12 @@ class Laser:
         """
         if self.dry_run:
             return True
-        for attempt in range(retries):
+        for _attempt in range(retries):
             current = self.status()
             if current == target:
                 return True
-            if attempt < 5 or attempt % 10 == 0:
-                print(f"Laser status={current!r}, want {target!r} ({attempt + 1}/{retries})")
             time.sleep(interval)
+        print(f"Laser status never reached {target!r} after {retries} polls")
         return False
 
     def shutter(self, open_: bool) -> str:

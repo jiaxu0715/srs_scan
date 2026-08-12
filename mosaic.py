@@ -131,8 +131,10 @@ def _load_image(path: str, z_index: int = 0):
             from aicsimageio.readers import BioformatsReader
         except ImportError as exc:
             raise ImportError(
-                "Reading .oir for stitch needs aicsimageio + bioformats"
+                "Reading .oir for stitch needs aicsimageio + bioformats_jar "
+                "(and Java). Install those or convert tiles to .tif first."
             ) from exc
+        print(f"  loading .oir via bioformats: {p.name}", flush=True)
         img = AICSImage(str(p), reader=BioformatsReader)
         data = img.get_image_data("ZYX", T=0, C=0)
         if data.ndim == 3:
@@ -210,7 +212,7 @@ def stitch_tiles(
                 np.save(npy, stitched)
                 print(f"tifffile missing; wrote {npy}")
                 return stitched, str(npy)
-        print(f"Wrote stitched mosaic → {out}")
+        print(f"Wrote stitched mosaic → {out}", flush=True)
         return stitched, str(out)
     return stitched, None
 
@@ -220,9 +222,31 @@ def collect_tiles_from_paths(paths: Iterable[str]) -> dict[tuple[int, int], str]
     out: dict[tuple[int, int], str] = {}
     for path in paths:
         rc = parse_tile_rc(path)
-        if rc is not None:
+        if rc is not None and path:
             out[rc] = path
     return out
+
+
+def collect_tiles_from_dir(directory: str) -> dict[tuple[int, int], str]:
+    """Scan *directory* for mosaic-named ``.oir``/``.tif`` tiles."""
+    if not directory or not os.path.isdir(directory):
+        return {}
+    paths = []
+    for name in os.listdir(directory):
+        low = name.lower()
+        if low.endswith((".oir", ".tif", ".tiff", ".npy", ".png")):
+            paths.append(os.path.join(directory, name))
+    return collect_tiles_from_paths(paths)
+
+
+def oir_stitch_deps_ok() -> tuple[bool, str]:
+    """Return (ok, detail) for optional .oir stitch dependencies."""
+    try:
+        import aicsimageio  # noqa: F401
+        from aicsimageio.readers import BioformatsReader  # noqa: F401
+    except ImportError as exc:
+        return False, f"missing aicsimageio/bioformats ({exc})"
+    return True, "aicsimageio + BioformatsReader importable"
 
 
 def write_tile_manifest(

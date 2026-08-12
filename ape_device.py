@@ -93,6 +93,9 @@ class ApeDevice:
                 if chunk[0] == 0x0A:
                     break
             return answer
+        except socket.timeout:
+            # Set-commands often send no reply; timeout is expected, not a fault.
+            raise RuntimeError("[Receive] Error while reading data") from None
         except Exception:
             traceback.print_exc()
             raise RuntimeError("[Receive] Error while reading data") from None
