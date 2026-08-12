@@ -3,7 +3,6 @@
   "mode": "discrete",
   "acquisition": "single_fov",
   "sample_name": "mouse_7wk_islet1",
-  "imaging_time": 0,
   "comment": "",
   "power_tol": 0.10,
   "scans": [

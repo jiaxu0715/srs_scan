@@ -11,9 +11,9 @@ XML-RPC. This branch does **not** depend on Olympus MATL multi-area protocols.
 | `acquisition` | Behavior |
 |---------------|----------|
 | `single_fov` | One capture at the current stage FOV (no columns/rows prompts). |
-| `mosaic` | MATL-like grid: user gives absolute stage X/Y of the **current FOV center** (also the mosaic center), columns, rows, Fluoview **zoom**, and overlap. Each tile is moved to, captured with its own retry + `power_tol` monitoring, then stitched in **pure Python**. |
+| `mosaic` | MATL-like grid centered on the **current Fluoview stage FOV** (read at runtime), with columns, rows, Fluoview **zoom**, and overlap. Each tile is moved to, captured with its own retry + `power_tol` monitoring, then stitched in **pure Python**. |
 
-Mosaic defaults match lab practice: **5% overlap**, snake visit order. Physical FOV is `509.117 µm / zoom` (hardcoded zoom‑1 calibration; scan resolution does not change FOV). Set `stage_x_um` / `stage_y_um` from the Fluoview stage readout for the parked FOV. Optional `stage_x_sign` / `stage_y_sign` (±1) flip stage axis sense if needed.
+Mosaic defaults match lab practice: **5% overlap**, snake visit order. Physical FOV is `509.117 µm / zoom` (hardcoded zoom‑1 calibration; scan resolution does not change FOV). Park the stage on the mosaic center before starting. Optional `stage_x_sign` / `stage_y_sign` (±1) flip stage axis sense if needed.
 
 ## Files
 

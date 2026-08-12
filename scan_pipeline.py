@@ -132,9 +132,13 @@ def _acquire_mosaic(
     sample = params["sample_name"]
     power_tol = params["power_tol"]
     field_um = field_um_from_zoom(params["zoom"])
+    # Mosaic center = current stage FOV (read from Fluoview; not a config field).
+    center_x_nm, center_y_nm = olympus.get_stage_xy()
+    stage_x_um = center_x_nm / 1000.0
+    stage_y_um = center_y_nm / 1000.0
     tiles = build_mosaic_tiles(
-        params["stage_x_um"],
-        params["stage_y_um"],
+        stage_x_um,
+        stage_y_um,
         params["columns"],
         params["rows"],
         field_um,
@@ -145,7 +149,7 @@ def _acquire_mosaic(
     )
     print(
         f"Mosaic {params['columns']}×{params['rows']} centered on "
-        f"({params['stage_x_um']:g}, {params['stage_y_um']:g}) µm; "
+        f"({stage_x_um:g}, {stage_y_um:g}) µm; "
         f"zoom={params['zoom']:g} → field={field_um:.3f} µm; "
         f"{len(tiles)} tiles; overlap={params['overlap']:.0%}"
     )
@@ -182,8 +186,6 @@ def _acquire_mosaic(
         )
 
     # Return to mosaic center (current FOV).
-    center_x_nm = int(round(float(params["stage_x_um"]) * 1000.0))
-    center_y_nm = int(round(float(params["stage_y_um"]) * 1000.0))
     olympus.move_stage(center_x_nm, center_y_nm, escape_objective=False)
 
     new_paths = log["New_Filename"][n_before:]
@@ -201,8 +203,8 @@ def _acquire_mosaic(
             "overlap": params["overlap"],
             "columns": params["columns"],
             "rows": params["rows"],
-            "stage_x_um": params["stage_x_um"],
-            "stage_y_um": params["stage_y_um"],
+            "stage_x_um": stage_x_um,
+            "stage_y_um": stage_y_um,
             "zoom": params["zoom"],
             "field_um": field_um,
         },

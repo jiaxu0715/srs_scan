@@ -8,8 +8,8 @@ Use ``mode: "sweep"`` or ``"discrete"`` for the laser strategy, and
 
 - **single_fov**: one MANUAL_MAIN capture at the current stage position (no
   columns/rows prompts).
-- **mosaic**: columns×rows grid centered on the current FOV
-  (``stage_x_um`` / ``stage_y_um``). FOV size is ``509.117 µm / zoom``
+- **mosaic**: columns×rows grid centered on the current Fluoview stage FOV
+  (read at runtime via XML-RPC). FOV size is ``509.117 µm / zoom``
   (lab zoom‑1 calibration). Each tile is acquired with its own
   retry/power_tol logic and stitched in pure Python (no MATL).
 
@@ -47,7 +47,6 @@ def validate(params: dict) -> dict:
         "mode": mode,
         "acquisition": acquisition,
         "sample_name": sample,
-        "imaging_time": float(params.get("imaging_time", 0) or 0),
         "comment": str(params.get("comment", "") or ""),
         "power_tol": float(params["power_tol"]) if "power_tol" in params else 0.10,
     }
@@ -66,8 +65,6 @@ def validate(params: dict) -> dict:
         if zoom <= 0:
             raise ValueError("zoom must be > 0")
         out.update(
-            stage_x_um=float(params["stage_x_um"]),
-            stage_y_um=float(params["stage_y_um"]),
             columns=columns,
             rows=rows,
             overlap=overlap,
@@ -148,7 +145,6 @@ class ParameterDialog:
         frm.grid()
 
         self.sample = tk.StringVar(value="sample")
-        self.imaging = tk.StringVar(value="0")
         self.comment = tk.StringVar(value="")
         self.acquisition = tk.StringVar(value="single_fov")
         self.mode = tk.StringVar(value="sweep")
@@ -158,8 +154,6 @@ class ParameterDialog:
         self.power_tol = tk.StringVar(value="0.10")
         self.opo_power = tk.StringVar(value="150")
         self.ir_power = tk.StringVar(value="200")
-        self.stage_x = tk.StringVar(value="0")
-        self.stage_y = tk.StringVar(value="0")
         self.columns = tk.StringVar(value="3")
         self.rows = tk.StringVar(value="3")
         self.overlap = tk.StringVar(value="0.05")
@@ -168,7 +162,6 @@ class ParameterDialog:
         for i, (label, var) in enumerate(
             (
                 ("Sample name", self.sample),
-                ("Imaging time (s)", self.imaging),
                 ("Comment", self.comment),
                 ("Power tol (frac)", self.power_tol),
             )
@@ -176,31 +169,29 @@ class ParameterDialog:
             ttk.Label(frm, text=label).grid(row=i, column=0, sticky="w", **pad)
             ttk.Entry(frm, textvariable=var, width=28).grid(row=i, column=1, **pad)
 
-        ttk.Label(frm, text="Acquisition").grid(row=4, column=0, sticky="w", **pad)
+        ttk.Label(frm, text="Acquisition").grid(row=3, column=0, sticky="w", **pad)
         acq = ttk.Combobox(
             frm,
             textvariable=self.acquisition,
             values=("single_fov", "mosaic"),
             state="readonly",
         )
-        acq.grid(row=4, column=1, sticky="ew", **pad)
+        acq.grid(row=3, column=1, sticky="ew", **pad)
         acq.bind("<<ComboboxSelected>>", lambda _e: self._toggle())
 
-        ttk.Label(frm, text="Mode").grid(row=5, column=0, sticky="w", **pad)
+        ttk.Label(frm, text="Mode").grid(row=4, column=0, sticky="w", **pad)
         box = ttk.Combobox(frm, textvariable=self.mode, values=("sweep", "discrete"), state="readonly")
-        box.grid(row=5, column=1, sticky="ew", **pad)
+        box.grid(row=4, column=1, sticky="ew", **pad)
         box.bind("<<ComboboxSelected>>", lambda _e: self._toggle())
 
         self.mosaic = ttk.LabelFrame(
             frm,
-            text="Mosaic (current FOV = grid center)",
+            text="Mosaic (center = current stage FOV)",
             padding=8,
         )
-        self.mosaic.grid(row=6, column=0, columnspan=2, sticky="ew", **pad)
+        self.mosaic.grid(row=5, column=0, columnspan=2, sticky="ew", **pad)
         for i, (label, var) in enumerate(
             (
-                ("Stage X (µm)", self.stage_x),
-                ("Stage Y (µm)", self.stage_y),
                 ("Columns", self.columns),
                 ("Rows", self.rows),
                 ("Overlap (frac)", self.overlap),
@@ -211,7 +202,7 @@ class ParameterDialog:
             ttk.Entry(self.mosaic, textvariable=var, width=20).grid(row=i, column=1, **pad)
 
         self.sweep = ttk.LabelFrame(frm, text="Sweep", padding=8)
-        self.sweep.grid(row=7, column=0, columnspan=2, sticky="ew", **pad)
+        self.sweep.grid(row=6, column=0, columnspan=2, sticky="ew", **pad)
         for i, (label, var) in enumerate(
             (
                 ("Start λ (nm)", self.start),
@@ -225,13 +216,13 @@ class ParameterDialog:
             ttk.Entry(self.sweep, textvariable=var, width=20).grid(row=i, column=1, **pad)
 
         self.discrete = ttk.LabelFrame(frm, text="Discrete (λ, opo, ir per line)", padding=8)
-        self.discrete.grid(row=8, column=0, columnspan=2, sticky="ew", **pad)
+        self.discrete.grid(row=7, column=0, columnspan=2, sticky="ew", **pad)
         self.scans = tk.Text(self.discrete, width=40, height=6)
         self.scans.grid(**pad)
         self.scans.insert("1.0", "787.0, 150, 200\n794.0, 150, 200\n")
 
         btns = ttk.Frame(frm)
-        btns.grid(row=9, column=0, columnspan=2, **pad)
+        btns.grid(row=8, column=0, columnspan=2, **pad)
         ttk.Button(btns, text="Cancel", command=self._cancel).grid(row=0, column=0, **pad)
         ttk.Button(btns, text="Start", command=lambda: self._ok(messagebox)).grid(row=0, column=1, **pad)
 
@@ -257,14 +248,11 @@ class ParameterDialog:
                 "mode": self.mode.get(),
                 "acquisition": self.acquisition.get(),
                 "sample_name": self.sample.get(),
-                "imaging_time": float(self.imaging.get() or 0),
                 "comment": self.comment.get(),
                 "power_tol": float(self.power_tol.get()),
             }
             if raw["acquisition"] == "mosaic":
                 raw.update(
-                    stage_x_um=float(self.stage_x.get()),
-                    stage_y_um=float(self.stage_y.get()),
                     columns=int(self.columns.get()),
                     rows=int(self.rows.get()),
                     overlap=float(self.overlap.get()),

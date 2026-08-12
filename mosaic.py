@@ -1,8 +1,9 @@
 """Mosaic geometry and pure-Python tile stitching (MATL-free).
 
 ``stage_x_um`` / ``stage_y_um`` are the absolute stage coordinates of the
-**current FOV center**, which is also the **geometric center** of the mosaic
-grid. Tile pitch uses FOV size and overlap (default 5%, matching lab MATL maps).
+**current FOV center** (also the mosaic center), typically read from Fluoview
+at runtime rather than from config. Tile pitch uses FOV size and overlap
+(default 5%, matching lab MATL maps).
 
 FOV edge length is ``ZOOM1_FIELD_UM / zoom`` (509.117 µm at zoom 1×); scan
 pixel count does not change the physical field.
