@@ -1,5 +1,5 @@
 {
-  "_about": "Discrete mosaic: grid centered on the current Fluoview stage FOV (read at runtime). FOV edge = 509.117 µm / zoom. Each tile uses MANUAL_MAIN with independent retry/power_tol; pure-Python stitch at the end (no MATL). overlap 0.05 ≈ MATL stitch overlap.",
+  "_about": "Discrete mosaic. Omit stage_x_um/stage_y_um to center on the live Fluoview stage FOV; set both (µm) to pin a persistent mosaic center. FOV edge = 509.117 µm / zoom. Each tile uses MANUAL_MAIN with independent retry/power_tol; pure-Python stitch at the end (no MATL). overlap 0.05 ≈ MATL stitch overlap.",
   "mode": "discrete",
   "acquisition": "mosaic",
   "sample_name": "mouse_7wk_islet1",

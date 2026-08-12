@@ -8,10 +8,11 @@ Use ``mode: "sweep"`` or ``"discrete"`` for the laser strategy, and
 
 - **single_fov**: one MANUAL_MAIN capture at the current stage position (no
   columns/rows prompts).
-- **mosaic**: columns×rows grid centered on the current Fluoview stage FOV
-  (read at runtime via XML-RPC). FOV size is ``509.117 µm / zoom``
-  (lab zoom‑1 calibration). Each tile is acquired with its own
-  retry/power_tol logic and stitched in pure Python (no MATL).
+- **mosaic**: columns×rows grid centered on optional ``stage_x_um`` /
+  ``stage_y_um``, or on the current Fluoview stage FOV if those are omitted.
+  FOV size is ``509.117 µm / zoom`` (lab zoom‑1 calibration). Each tile is
+  acquired with its own retry/power_tol logic and stitched in pure Python
+  (no MATL).
 
 JSON files may include ``"_..."`` keys for human-readable notes; they are
 ignored during validation.
@@ -72,6 +73,13 @@ def validate(params: dict) -> dict:
             stage_x_sign=int(params.get("stage_x_sign", 1)),
             stage_y_sign=int(params.get("stage_y_sign", 1)),
         )
+        has_x = "stage_x_um" in params and params["stage_x_um"] is not None and str(params["stage_x_um"]).strip() != ""
+        has_y = "stage_y_um" in params and params["stage_y_um"] is not None and str(params["stage_y_um"]).strip() != ""
+        if has_x ^ has_y:
+            raise ValueError("provide both stage_x_um and stage_y_um, or neither")
+        if has_x and has_y:
+            out["stage_x_um"] = float(params["stage_x_um"])
+            out["stage_y_um"] = float(params["stage_y_um"])
 
     if mode == "sweep":
         start = float(params["start_wavelength"])
@@ -158,6 +166,8 @@ class ParameterDialog:
         self.rows = tk.StringVar(value="3")
         self.overlap = tk.StringVar(value="0.05")
         self.zoom = tk.StringVar(value="1.0")
+        self.stage_x = tk.StringVar(value="")
+        self.stage_y = tk.StringVar(value="")
 
         for i, (label, var) in enumerate(
             (
@@ -186,12 +196,14 @@ class ParameterDialog:
 
         self.mosaic = ttk.LabelFrame(
             frm,
-            text="Mosaic (center = current stage FOV)",
+            text="Mosaic (blank stage = use current FOV)",
             padding=8,
         )
         self.mosaic.grid(row=5, column=0, columnspan=2, sticky="ew", **pad)
         for i, (label, var) in enumerate(
             (
+                ("Stage X µm (opt)", self.stage_x),
+                ("Stage Y µm (opt)", self.stage_y),
                 ("Columns", self.columns),
                 ("Rows", self.rows),
                 ("Overlap (frac)", self.overlap),
@@ -258,6 +270,11 @@ class ParameterDialog:
                     overlap=float(self.overlap.get()),
                     zoom=float(self.zoom.get()),
                 )
+                sx = self.stage_x.get().strip()
+                sy = self.stage_y.get().strip()
+                if sx or sy:
+                    raw["stage_x_um"] = float(sx)
+                    raw["stage_y_um"] = float(sy)
             if raw["mode"] == "sweep":
                 raw.update(
                     start_wavelength=float(self.start.get()),

@@ -134,10 +134,24 @@ def _acquire_mosaic(
     sample = params["sample_name"]
     power_tol = params["power_tol"]
     field_um = field_um_from_zoom(params["zoom"])
-    # Mosaic center = current stage FOV (read from Fluoview; not a config field).
-    center_x_nm, center_y_nm = olympus.get_stage_xy()
-    stage_x_um = center_x_nm / 1000.0
-    stage_y_um = center_y_nm / 1000.0
+    # Optional fixed center from config; otherwise use live Fluoview stage XY.
+    if "stage_x_um" in params and "stage_y_um" in params:
+        stage_x_um = float(params["stage_x_um"])
+        stage_y_um = float(params["stage_y_um"])
+        center_x_nm = int(round(stage_x_um * 1000.0))
+        center_y_nm = int(round(stage_y_um * 1000.0))
+        print(
+            f"Mosaic center from config: ({stage_x_um:g}, {stage_y_um:g}) µm",
+            flush=True,
+        )
+    else:
+        center_x_nm, center_y_nm = olympus.get_stage_xy()
+        stage_x_um = center_x_nm / 1000.0
+        stage_y_um = center_y_nm / 1000.0
+        print(
+            f"Mosaic center from Fluoview stage: ({stage_x_um:g}, {stage_y_um:g}) µm",
+            flush=True,
+        )
     tiles = build_mosaic_tiles(
         stage_x_um,
         stage_y_um,

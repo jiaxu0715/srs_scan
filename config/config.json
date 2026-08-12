@@ -1,5 +1,5 @@
 {
-  "_about": "Discrete single-FOV scan (MANUAL_MAIN). For mosaic, set acquisition=mosaic and fill columns, rows, zoom (see example_mosaic.json; FOV = 509.117 µm / zoom; stage center is read from Fluoview). power_tol is ± relative OPO/IR tolerance (discrete only).",
+  "_about": "Discrete single-FOV scan (MANUAL_MAIN). For mosaic, set acquisition=mosaic and fill columns, rows, zoom (see example_mosaic.json). Optional stage_x_um/stage_y_um pin the mosaic center; omit both to use the live Fluoview stage. FOV = 509.117 µm / zoom. power_tol is ± relative OPO/IR tolerance (discrete only).",
   "mode": "discrete",
   "acquisition": "single_fov",
   "sample_name": "mouse_7wk_islet1",
