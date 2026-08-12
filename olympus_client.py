@@ -11,11 +11,11 @@ pipeline on the ``matl-retry`` branch.
 laser is tuned:
 
   1. waits for the laser to reach a stable status
-  2. starts MANUAL_MAIN (one .oir at the current FOV)
-  3. checks status / power_tol (discrete only) before opening the shutter
-  4. opens the laser shutter during the scan
-  5. watches for laser faults mid-scan and optionally rescans
-  6. renames the output .oir with sample, λ, and power tags
+  2. opens the laser shutter (before Olympus starts — late shutter cuts off
+     the top of the FOV)
+  3. starts MANUAL_MAIN (one .oir at the current FOV)
+  4. records power/λ readouts; watches for faults mid-scan and optionally rescans
+  5. closes shutter, stops protocol, renames the .oir with sample/λ/power tags
 
 Imaging geometry (Z, dwell, etc.) lives in the active Olympus settings —
 Python does not configure MATL multi-area layouts.
@@ -324,6 +324,9 @@ def acquire_single_fov(
             print(f"Laser never reached {target_status!r}{why}")
             return False
 
+        # Open shutter BEFORE Olympus starts (legacy STEP1.1). Late shutter
+        # blacks out the top of the FOV; early shutter is preferred.
+        laser.shutter(True)
         path = olympus.start_single()
         valid = append_readouts()
         status = (
@@ -338,7 +341,6 @@ def acquire_single_fov(
         ):
             interrupted = True
         else:
-            laser.shutter(True)
             interrupted = watch_for_fault()
 
         if not interrupted or rescans >= max_rescans:
@@ -449,6 +451,9 @@ def acquire_matl(
             print(f"Laser never reached {target_status!r}{why}")
             return False
 
+        # Open shutter BEFORE Olympus starts. Prefer early shutter over late
+        # (late blacks out the start of the scan / top of FOV).
+        laser.shutter(True)
         path = olympus.start_matl()
         valid = append_readouts()
         status = laser.status() if not (getattr(laser, "dry_run", False) or olympus.dry_run) else target_status
@@ -459,7 +464,6 @@ def acquire_matl(
         ):
             interrupted = True
         else:
-            laser.shutter(True)
             interrupted = watch_for_fault()
 
         if not interrupted or rescans >= max_rescans:

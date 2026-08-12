@@ -9,7 +9,8 @@ Use ``mode: "sweep"`` or ``"discrete"`` for the laser strategy, and
 - **single_fov**: one MANUAL_MAIN capture at the current stage position (no
   columns/rows prompts).
 - **mosaic**: columns×rows grid centered on the current FOV
-  (``stage_x_um`` / ``stage_y_um``); each tile is acquired with its own
+  (``stage_x_um`` / ``stage_y_um``). FOV size is ``509.117 µm / zoom``
+  (lab zoom‑1 calibration). Each tile is acquired with its own
   retry/power_tol logic and stitched in pure Python (no MATL).
 
 JSON files may include ``"_..."`` keys for human-readable notes; they are
@@ -57,22 +58,20 @@ def validate(params: dict) -> dict:
         columns = int(params["columns"])
         rows = int(params["rows"])
         overlap = float(params.get("overlap", 0.05))
-        field_x = float(params["field_x_um"])
-        field_y = float(params["field_y_um"])
+        zoom = float(params.get("zoom", 1.0))
         if columns < 1 or rows < 1:
             raise ValueError("columns and rows must be >= 1")
         if not 0.0 <= overlap < 1.0:
             raise ValueError("overlap must be in [0, 1)")
-        if field_x <= 0 or field_y <= 0:
-            raise ValueError("field_x_um and field_y_um must be > 0")
+        if zoom <= 0:
+            raise ValueError("zoom must be > 0")
         out.update(
             stage_x_um=float(params["stage_x_um"]),
             stage_y_um=float(params["stage_y_um"]),
             columns=columns,
             rows=rows,
             overlap=overlap,
-            field_x_um=field_x,
-            field_y_um=field_y,
+            zoom=zoom,
             stage_x_sign=int(params.get("stage_x_sign", 1)),
             stage_y_sign=int(params.get("stage_y_sign", 1)),
         )
@@ -164,8 +163,7 @@ class ParameterDialog:
         self.columns = tk.StringVar(value="3")
         self.rows = tk.StringVar(value="3")
         self.overlap = tk.StringVar(value="0.05")
-        self.field_x = tk.StringVar(value="509.117")
-        self.field_y = tk.StringVar(value="509.117")
+        self.zoom = tk.StringVar(value="1.0")
 
         for i, (label, var) in enumerate(
             (
@@ -206,8 +204,7 @@ class ParameterDialog:
                 ("Columns", self.columns),
                 ("Rows", self.rows),
                 ("Overlap (frac)", self.overlap),
-                ("Field X (µm)", self.field_x),
-                ("Field Y (µm)", self.field_y),
+                ("Zoom", self.zoom),
             )
         ):
             ttk.Label(self.mosaic, text=label).grid(row=i, column=0, sticky="w", **pad)
@@ -271,8 +268,7 @@ class ParameterDialog:
                     columns=int(self.columns.get()),
                     rows=int(self.rows.get()),
                     overlap=float(self.overlap.get()),
-                    field_x_um=float(self.field_x.get()),
-                    field_y_um=float(self.field_y.get()),
+                    zoom=float(self.zoom.get()),
                 )
             if raw["mode"] == "sweep":
                 raw.update(

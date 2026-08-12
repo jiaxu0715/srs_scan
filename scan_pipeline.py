@@ -30,6 +30,7 @@ from laser_client import DEFAULT_HOST, DEFAULT_PORT, Laser, nm_to_tenths
 from mosaic import (
     build_mosaic_tiles,
     collect_tiles_from_paths,
+    field_um_from_zoom,
     stitch_tiles,
     tile_sample_name,
     write_tile_manifest,
@@ -130,13 +131,14 @@ def _acquire_mosaic(
     """Capture every mosaic tile at the current laser setpoint, then stitch."""
     sample = params["sample_name"]
     power_tol = params["power_tol"]
+    field_um = field_um_from_zoom(params["zoom"])
     tiles = build_mosaic_tiles(
         params["stage_x_um"],
         params["stage_y_um"],
         params["columns"],
         params["rows"],
-        params["field_x_um"],
-        params["field_y_um"],
+        field_um,
+        field_um,
         params["overlap"],
         x_sign=params.get("stage_x_sign", 1),
         y_sign=params.get("stage_y_sign", 1),
@@ -144,6 +146,7 @@ def _acquire_mosaic(
     print(
         f"Mosaic {params['columns']}×{params['rows']} centered on "
         f"({params['stage_x_um']:g}, {params['stage_y_um']:g}) µm; "
+        f"zoom={params['zoom']:g} → field={field_um:.3f} µm; "
         f"{len(tiles)} tiles; overlap={params['overlap']:.0%}"
     )
 
@@ -200,6 +203,8 @@ def _acquire_mosaic(
             "rows": params["rows"],
             "stage_x_um": params["stage_x_um"],
             "stage_y_um": params["stage_y_um"],
+            "zoom": params["zoom"],
+            "field_um": field_um,
         },
     )
     if olympus.dry_run:

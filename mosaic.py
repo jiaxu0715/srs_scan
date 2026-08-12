@@ -4,6 +4,9 @@
 **current FOV center**, which is also the **geometric center** of the mosaic
 grid. Tile pitch uses FOV size and overlap (default 5%, matching lab MATL maps).
 
+FOV edge length is ``ZOOM1_FIELD_UM / zoom`` (509.117 µm at zoom 1×); scan
+pixel count does not change the physical field.
+
 Visit order is snake (row-major, alternate rows reverse), matching Yingjie/MATL
 area indexing.
 """
@@ -15,6 +18,17 @@ import os
 import re
 from pathlib import Path
 from typing import Iterable
+
+# Physical FOV at Fluoview optical zoom 1× (lab calibration; independent of scan pixels).
+ZOOM1_FIELD_UM = 509.117
+
+
+def field_um_from_zoom(zoom: float) -> float:
+    """Square FOV edge length in µm for a Fluoview optical zoom factor."""
+    z = float(zoom)
+    if z <= 0:
+        raise ValueError(f"zoom must be > 0; got {zoom}")
+    return ZOOM1_FIELD_UM / z
 
 
 def tile_pitch_um(field_um: float, overlap: float) -> float:

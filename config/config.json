@@ -1,5 +1,5 @@
 {
-  "_about": "Discrete single-FOV scan (MANUAL_MAIN). For mosaic, set acquisition=mosaic and fill stage_x/y, columns, rows, field sizes (see example_mosaic.json). power_tol is ± relative OPO/IR tolerance (discrete only).",
+  "_about": "Discrete single-FOV scan (MANUAL_MAIN). For mosaic, set acquisition=mosaic and fill stage_x/y, columns, rows, zoom (see example_mosaic.json; FOV = 509.117 µm / zoom). power_tol is ± relative OPO/IR tolerance (discrete only).",
   "mode": "discrete",
   "acquisition": "single_fov",
   "sample_name": "mouse_7wk_islet1",
