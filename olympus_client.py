@@ -11,8 +11,9 @@ protocol control.
 - ``matl`` → ``acquire_matl()`` (Olympus built-in MATL multi-area / Z-stack)
 
 Both open the laser shutter **before** starting the Olympus protocol (late
-shutter cuts off the top of the FOV). Z-stack depth, step, and MATL ROI layout
-live in the saved Fluoview protocol — Python does not configure them here.
+shutter cuts off the top of the FOV). Optional ``power_monitor`` samples OPO/IR
+on each poll for per-wavelength high/low/mean JSON. Z-stack depth, step, and
+MATL ROI layout live in the Fluoview protocol — Python does not set them here.
 """
 
 from __future__ import annotations
@@ -27,6 +28,8 @@ from laser_client import power_within_tol
 DEFAULT_OLYMPUS_URL = "http://127.0.0.1:8080/xmlrpc"
 _MATL = {"executionType": "EXECUTION_TYPE_MATL"}
 _MANUAL = {"executionType": "EXECUTION_TYPE_MANUAL_MAIN"}
+# How often to poll Protocol.getProtocolProgress while waiting for SCANNING to end.
+_SCAN_POLL_S = 0.25
 
 
 def _numeric(value) -> bool:
@@ -260,23 +263,30 @@ def acquire_single_fov(
     power_tol,
     *,
     max_rescans: int = 3,
+    power_monitor=None,
 ) -> bool:
     """Run one MANUAL_MAIN single-FOV acquisition at the current laser setpoint.
 
     *target_status* is ``"OK"`` in discrete mode and ``"hold"`` during APE
     hardware sweeps. Power tolerance is enforced only when ``target_status``
-    is ``"OK"``.
+    is ``"OK"``. When *power_monitor* is set, OPO/IR are sampled on every
+    poll (and the initial readout) for high/low/mean logging.
 
     Returns False only if the laser never reaches *target_status* (caller may
     retry the whole wavelength point).
     """
     check_power = target_status == "OK"
+    track_power = power_monitor is not None or check_power
 
     def append_readouts() -> bool:
-        log["OPO_power"].append(laser.get_opo_power())
-        log["IR_power"].append(laser.get_ir_power())
+        opo = laser.get_opo_power()
+        ir = laser.get_ir_power()
+        log["OPO_power"].append(opo)
+        log["IR_power"].append(ir)
         log["OPO_WAVELENGTH"].append(laser.get_wavelength())
-        return _numeric(log["OPO_power"][-1]) and _numeric(log["OPO_WAVELENGTH"][-1])
+        if power_monitor is not None:
+            power_monitor.sample(opo, ir)
+        return _numeric(opo) and _numeric(log["OPO_WAVELENGTH"][-1])
 
     def powers_ok(opo, ir) -> bool:
         if getattr(laser, "dry_run", False) or olympus.dry_run:
@@ -299,13 +309,15 @@ def acquire_single_fov(
             if status != target_status:
                 laser.shutter(True)
                 return True
-            if check_power and status == "OK":
+            if track_power:
                 opo = laser.get_opo_power()
                 ir = laser.get_ir_power()
-                if not powers_ok(opo, ir):
+                if power_monitor is not None:
+                    power_monitor.sample(opo, ir)
+                if check_power and status == "OK" and not powers_ok(opo, ir):
                     laser.shutter(True)
                     return True
-            time.sleep(2)
+            time.sleep(_SCAN_POLL_S)
         return False
 
     path = ""
@@ -374,19 +386,26 @@ def acquire_matl(
     power_tol,
     *,
     max_rescans: int = 3,
+    power_monitor=None,
 ) -> bool:
     """Run one Olympus MATL acquisition at the current laser setpoint.
 
     Uses the loaded Fluoview MATL map (multi-area / Z-stack). Power tolerance
-    is enforced only when ``target_status`` is ``"OK"``.
+    is enforced only when ``target_status`` is ``"OK"``. When *power_monitor*
+    is set, OPO/IR are sampled on every poll for high/low/mean logging.
     """
     check_power = target_status == "OK"
+    track_power = power_monitor is not None or check_power
 
     def append_readouts() -> bool:
-        log["OPO_power"].append(laser.get_opo_power())
-        log["IR_power"].append(laser.get_ir_power())
+        opo = laser.get_opo_power()
+        ir = laser.get_ir_power()
+        log["OPO_power"].append(opo)
+        log["IR_power"].append(ir)
         log["OPO_WAVELENGTH"].append(laser.get_wavelength())
-        return _numeric(log["OPO_power"][-1]) and _numeric(log["OPO_WAVELENGTH"][-1])
+        if power_monitor is not None:
+            power_monitor.sample(opo, ir)
+        return _numeric(opo) and _numeric(log["OPO_WAVELENGTH"][-1])
 
     def powers_ok(opo, ir) -> bool:
         if getattr(laser, "dry_run", False) or olympus.dry_run:
@@ -409,13 +428,15 @@ def acquire_matl(
             if status != target_status:
                 laser.shutter(True)
                 return True
-            if check_power and status == "OK":
+            if track_power:
                 opo = laser.get_opo_power()
                 ir = laser.get_ir_power()
-                if not powers_ok(opo, ir):
+                if power_monitor is not None:
+                    power_monitor.sample(opo, ir)
+                if check_power and status == "OK" and not powers_ok(opo, ir):
                     laser.shutter(True)
                     return True
-            time.sleep(2)
+            time.sleep(_SCAN_POLL_S)
         return False
 
     path = ""
