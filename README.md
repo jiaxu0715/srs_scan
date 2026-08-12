@@ -3,7 +3,17 @@
 Excel-free replacement for `ape_client_S10531.xlsm` + STEP1.
 
 Uses APE’s original `ape_device.py` TCP client. Python drives the laser with the
-same ASCII commands Excel used, and Olympus MATL over XML-RPC.
+same ASCII commands Excel used, and Olympus **MANUAL_MAIN** acquisition over
+XML-RPC. This branch does **not** depend on Olympus MATL multi-area protocols.
+
+## Acquisition modes
+
+| `acquisition` | Behavior |
+|---------------|----------|
+| `single_fov` | One capture at the current stage FOV (no columns/rows prompts). |
+| `mosaic` | MATL-like grid: user gives absolute stage X/Y of the **current FOV center** (also the mosaic center), columns, rows, FOV size, and overlap. Each tile is moved to, captured with its own retry + `power_tol` monitoring, then stitched in **pure Python**. |
+
+Mosaic defaults match lab practice: **5% overlap**, snake visit order, FOV ≈ 509 µm (zoom1). Set `stage_x_um` / `stage_y_um` from the Fluoview stage readout for the parked FOV. Optional `stage_x_sign` / `stage_y_sign` (±1) flip stage axis sense if needed.
 
 ## Files
 
@@ -11,8 +21,9 @@ same ASCII commands Excel used, and Olympus MATL over XML-RPC.
 |------|------|
 | `ape_device.py` | Official APE TCP client (**do not rewrite**) |
 | `laser_client.py` | Thin wrapper: timeout, STATUS/shutter/λ/sweep helpers |
-| `olympus_client.py` | Fluoview XML-RPC client + MATL acquire/rescan/rename |
-| `scan_pipeline.py` | Sweep / discrete loops |
+| `olympus_client.py` | Fluoview XML-RPC + stage + single-FOV acquire/rescan/rename |
+| `mosaic.py` | Grid geometry + pure-Python stitch |
+| `scan_pipeline.py` | Sweep / discrete loops (single FOV or mosaic) |
 | `parameter_dialog.py` | JSON + optional GUI |
 | `run_scan.py` | CLI |
 
@@ -23,12 +34,16 @@ Defaults match the workbook: host `10.84.172.229`, port `51100`.
 ```bash
 pip install -r requirements.txt
 
-# Edit config.json (discrete λ list; Z-stack lives in the Olympus MATL protocol), then:
+# Edit config.json (discrete λ list; imaging geometry lives in Olympus settings), then:
 python run_scan.py
 python run_scan.py --dry-run
 python run_scan.py --config example_sweep.json
-python run_scan.py --gui   # optional dialog
+python run_scan.py --config example_mosaic.json --dry-run
+python run_scan.py --gui   # optional dialog (mosaic fields appear when acquisition=mosaic)
 ```
+
+Stitching `.oir` tiles needs `aicsimageio` + bioformats (optional). If stitch fails,
+a `{sample}_{λ}nm_tiles.json` manifest is still written for offline stitching.
 
 Set-commands (`EOM=1`, shutter, …) often send no reply. The wrapper sets a 5s
 socket timeout on the APE connection so those calls cannot hang forever.

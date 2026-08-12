@@ -3,9 +3,14 @@
 Pipeline role
 -------------
 Defines the experiment recipe consumed by ``run_scan`` → ``scan_pipeline``.
-For multi-Z acquisition, use ``mode: "discrete"`` and list each wavelength
-with OPO/IR power. Z-stack geometry is **not** configured here — set that in
-the Olympus MATL protocol before running.
+Use ``mode: "sweep"`` or ``"discrete"`` for the laser strategy, and
+``acquisition: "single_fov"`` or ``"mosaic"``.
+
+- **single_fov**: one MANUAL_MAIN capture at the current stage position (no
+  columns/rows prompts).
+- **mosaic**: columns×rows grid centered on the current FOV
+  (``stage_x_um`` / ``stage_y_um``); each tile is acquired with its own
+  retry/power_tol logic and stitched in pure Python (no MATL).
 
 JSON files may include ``"_..."`` keys for human-readable notes; they are
 ignored during validation.
@@ -16,6 +21,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+_SUPPORTED_ACQUISITION = {"single_fov", "mosaic"}
+
 
 def validate(params: dict) -> dict:
     """Normalize and type-check a parameter dict from JSON or the GUI."""
@@ -25,12 +32,19 @@ def validate(params: dict) -> dict:
     mode = str(params.get("mode", "")).strip().lower()
     if mode not in {"sweep", "discrete"}:
         raise ValueError("mode must be 'sweep' or 'discrete'")
+    acquisition = str(params.get("acquisition", "single_fov")).strip().lower()
+    if acquisition not in _SUPPORTED_ACQUISITION:
+        raise ValueError(
+            f"acquisition must be one of {sorted(_SUPPORTED_ACQUISITION)}; "
+            f"got {acquisition!r}"
+        )
     sample = str(params.get("sample_name", "")).strip()
     if not sample:
         raise ValueError("sample_name is required")
 
     out = {
         "mode": mode,
+        "acquisition": acquisition,
         "sample_name": sample,
         "imaging_time": float(params.get("imaging_time", 0) or 0),
         "comment": str(params.get("comment", "") or ""),
@@ -38,6 +52,31 @@ def validate(params: dict) -> dict:
     }
     if out["power_tol"] < 0:
         raise ValueError("power_tol must be >= 0")
+
+    if acquisition == "mosaic":
+        columns = int(params["columns"])
+        rows = int(params["rows"])
+        overlap = float(params.get("overlap", 0.05))
+        field_x = float(params["field_x_um"])
+        field_y = float(params["field_y_um"])
+        if columns < 1 or rows < 1:
+            raise ValueError("columns and rows must be >= 1")
+        if not 0.0 <= overlap < 1.0:
+            raise ValueError("overlap must be in [0, 1)")
+        if field_x <= 0 or field_y <= 0:
+            raise ValueError("field_x_um and field_y_um must be > 0")
+        out.update(
+            stage_x_um=float(params["stage_x_um"]),
+            stage_y_um=float(params["stage_y_um"]),
+            columns=columns,
+            rows=rows,
+            overlap=overlap,
+            field_x_um=field_x,
+            field_y_um=field_y,
+            stage_x_sign=int(params.get("stage_x_sign", 1)),
+            stage_y_sign=int(params.get("stage_y_sign", 1)),
+        )
+
     if mode == "sweep":
         start = float(params["start_wavelength"])
         end = float(params["end_wavelength"])
@@ -112,6 +151,7 @@ class ParameterDialog:
         self.sample = tk.StringVar(value="sample")
         self.imaging = tk.StringVar(value="0")
         self.comment = tk.StringVar(value="")
+        self.acquisition = tk.StringVar(value="single_fov")
         self.mode = tk.StringVar(value="sweep")
         self.start = tk.StringVar(value="787.0")
         self.end = tk.StringVar(value="800.0")
@@ -119,6 +159,13 @@ class ParameterDialog:
         self.power_tol = tk.StringVar(value="0.10")
         self.opo_power = tk.StringVar(value="150")
         self.ir_power = tk.StringVar(value="200")
+        self.stage_x = tk.StringVar(value="0")
+        self.stage_y = tk.StringVar(value="0")
+        self.columns = tk.StringVar(value="3")
+        self.rows = tk.StringVar(value="3")
+        self.overlap = tk.StringVar(value="0.05")
+        self.field_x = tk.StringVar(value="509.117")
+        self.field_y = tk.StringVar(value="509.117")
 
         for i, (label, var) in enumerate(
             (
@@ -131,13 +178,43 @@ class ParameterDialog:
             ttk.Label(frm, text=label).grid(row=i, column=0, sticky="w", **pad)
             ttk.Entry(frm, textvariable=var, width=28).grid(row=i, column=1, **pad)
 
-        ttk.Label(frm, text="Mode").grid(row=4, column=0, sticky="w", **pad)
+        ttk.Label(frm, text="Acquisition").grid(row=4, column=0, sticky="w", **pad)
+        acq = ttk.Combobox(
+            frm,
+            textvariable=self.acquisition,
+            values=("single_fov", "mosaic"),
+            state="readonly",
+        )
+        acq.grid(row=4, column=1, sticky="ew", **pad)
+        acq.bind("<<ComboboxSelected>>", lambda _e: self._toggle())
+
+        ttk.Label(frm, text="Mode").grid(row=5, column=0, sticky="w", **pad)
         box = ttk.Combobox(frm, textvariable=self.mode, values=("sweep", "discrete"), state="readonly")
-        box.grid(row=4, column=1, sticky="ew", **pad)
+        box.grid(row=5, column=1, sticky="ew", **pad)
         box.bind("<<ComboboxSelected>>", lambda _e: self._toggle())
 
+        self.mosaic = ttk.LabelFrame(
+            frm,
+            text="Mosaic (current FOV = grid center)",
+            padding=8,
+        )
+        self.mosaic.grid(row=6, column=0, columnspan=2, sticky="ew", **pad)
+        for i, (label, var) in enumerate(
+            (
+                ("Stage X (µm)", self.stage_x),
+                ("Stage Y (µm)", self.stage_y),
+                ("Columns", self.columns),
+                ("Rows", self.rows),
+                ("Overlap (frac)", self.overlap),
+                ("Field X (µm)", self.field_x),
+                ("Field Y (µm)", self.field_y),
+            )
+        ):
+            ttk.Label(self.mosaic, text=label).grid(row=i, column=0, sticky="w", **pad)
+            ttk.Entry(self.mosaic, textvariable=var, width=20).grid(row=i, column=1, **pad)
+
         self.sweep = ttk.LabelFrame(frm, text="Sweep", padding=8)
-        self.sweep.grid(row=5, column=0, columnspan=2, sticky="ew", **pad)
+        self.sweep.grid(row=7, column=0, columnspan=2, sticky="ew", **pad)
         for i, (label, var) in enumerate(
             (
                 ("Start λ (nm)", self.start),
@@ -151,13 +228,13 @@ class ParameterDialog:
             ttk.Entry(self.sweep, textvariable=var, width=20).grid(row=i, column=1, **pad)
 
         self.discrete = ttk.LabelFrame(frm, text="Discrete (λ, opo, ir per line)", padding=8)
-        self.discrete.grid(row=6, column=0, columnspan=2, sticky="ew", **pad)
+        self.discrete.grid(row=8, column=0, columnspan=2, sticky="ew", **pad)
         self.scans = tk.Text(self.discrete, width=40, height=6)
         self.scans.grid(**pad)
         self.scans.insert("1.0", "787.0, 150, 200\n794.0, 150, 200\n")
 
         btns = ttk.Frame(frm)
-        btns.grid(row=7, column=0, columnspan=2, **pad)
+        btns.grid(row=9, column=0, columnspan=2, **pad)
         ttk.Button(btns, text="Cancel", command=self._cancel).grid(row=0, column=0, **pad)
         ttk.Button(btns, text="Start", command=lambda: self._ok(messagebox)).grid(row=0, column=1, **pad)
 
@@ -166,6 +243,10 @@ class ParameterDialog:
         root.mainloop()
 
     def _toggle(self) -> None:
+        if self.acquisition.get() == "mosaic":
+            self.mosaic.grid()
+        else:
+            self.mosaic.grid_remove()
         if self.mode.get() == "sweep":
             self.sweep.grid()
             self.discrete.grid_remove()
@@ -177,11 +258,22 @@ class ParameterDialog:
         try:
             raw = {
                 "mode": self.mode.get(),
+                "acquisition": self.acquisition.get(),
                 "sample_name": self.sample.get(),
                 "imaging_time": float(self.imaging.get() or 0),
                 "comment": self.comment.get(),
                 "power_tol": float(self.power_tol.get()),
             }
+            if raw["acquisition"] == "mosaic":
+                raw.update(
+                    stage_x_um=float(self.stage_x.get()),
+                    stage_y_um=float(self.stage_y.get()),
+                    columns=int(self.columns.get()),
+                    rows=int(self.rows.get()),
+                    overlap=float(self.overlap.get()),
+                    field_x_um=float(self.field_x.get()),
+                    field_y_um=float(self.field_y.get()),
+                )
             if raw["mode"] == "sweep":
                 raw.update(
                     start_wavelength=float(self.start.get()),

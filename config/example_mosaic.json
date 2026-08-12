@@ -1,0 +1,20 @@
+{
+  "_about": "Discrete mosaic: grid centered on current FOV (stage_x/y µm). Each tile uses MANUAL_MAIN with independent retry/power_tol; pure-Python stitch at the end (no MATL). field_* match lab zoom1 FOV; overlap 0.05 ≈ MATL stitch overlap.",
+  "mode": "discrete",
+  "acquisition": "mosaic",
+  "sample_name": "mouse_7wk_islet1",
+  "imaging_time": 0,
+  "comment": "",
+  "power_tol": 0.10,
+  "stage_x_um": 0.0,
+  "stage_y_um": 0.0,
+  "columns": 3,
+  "rows": 3,
+  "overlap": 0.05,
+  "field_x_um": 509.117,
+  "field_y_um": 509.117,
+  "scans": [
+    {"wavelength": 787.0, "opo_power": 150, "ir_power": 200},
+    {"wavelength": 794.0, "opo_power": 150, "ir_power": 200}
+  ]
+}

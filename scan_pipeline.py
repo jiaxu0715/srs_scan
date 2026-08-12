@@ -3,16 +3,20 @@
 Pipeline role
 -------------
 Coordinates ``laser_client.Laser`` and ``olympus_client.Olympus`` for one full
-experiment. This is where multi-Z + multi-λ logic lives at the Python level:
+experiment. Laser strategy (sweep vs discrete) is configured in JSON; each
+wavelength point acquires via ``acquire_single_fov()`` (Olympus MANUAL_MAIN):
 
-- **discrete mode** (typical for multi-Z): for each (λ, OPO, IR) in config,
-  tune the laser → wait for ``OK`` → call ``acquire_matl()`` → Olympus runs the
-  saved Z-stack MATL protocol once per wavelength.
+- **acquisition single_fov**: one capture at the current stage position.
+- **acquisition mosaic**: move stage across a columns×rows grid centered on the
+  current FOV, capture each tile with its own retry/power_tol logic, then
+  stitch with pure Python (no MATL).
+
+- **discrete mode**: for each (λ, OPO, IR) in config, tune the laser → wait
+  for ``OK`` → acquire (single FOV or mosaic).
 - **sweep mode**: use the APE internal sweep table; wait for ``hold`` at each
   step instead of setting λ explicitly.
 
-Replaces the Excel + STEP1 VBA workflow. Logging appends one row per run to
-``YYYYMMDD.xlsx`` (legacy workbook layout).
+Logging appends one row per run to ``YYYYMMDD.xlsx`` (legacy workbook layout).
 """
 
 from __future__ import annotations
@@ -23,7 +27,14 @@ import time
 from datetime import datetime
 
 from laser_client import DEFAULT_HOST, DEFAULT_PORT, Laser, nm_to_tenths
-from olympus_client import DEFAULT_OLYMPUS_URL, Olympus, acquire_matl
+from mosaic import (
+    build_mosaic_tiles,
+    collect_tiles_from_paths,
+    stitch_tiles,
+    tile_sample_name,
+    write_tile_manifest,
+)
+from olympus_client import DEFAULT_OLYMPUS_URL, Olympus, acquire_single_fov
 
 try:
     from tqdm import tqdm
@@ -31,9 +42,12 @@ except ImportError:
     def tqdm(it, **_):
         return it
 
+# Brief pause after XY move so the stage can settle before MANUAL_MAIN.
+_STAGE_SETTLE_S = 2.0
+
 
 def _new_log() -> dict:
-    """Empty in-memory log; filled by ``acquire_matl()`` and saved at end of run."""
+    """Empty in-memory log; filled by ``acquire_single_fov()`` and saved at end of run."""
     return {
         "OPO_power": [],
         "IR_power": [],
@@ -86,8 +100,8 @@ def _acquire_with_retry(
     power_tol,
     on_retry=None,
 ) -> None:
-    """Keep calling ``acquire_matl()`` until the laser was ready enough to start."""
-    while not acquire_matl(
+    """Keep calling ``acquire_single_fov()`` until the laser was ready enough to start."""
+    while not acquire_single_fov(
         laser,
         olympus,
         sample,
@@ -102,15 +116,157 @@ def _acquire_with_retry(
             on_retry()
 
 
+def _acquire_mosaic(
+    laser: Laser,
+    olympus: Olympus,
+    params: dict,
+    status: str,
+    log: dict,
+    nm: float,
+    opo_setpoint,
+    ir_setpoint,
+    on_retry=None,
+) -> None:
+    """Capture every mosaic tile at the current laser setpoint, then stitch."""
+    sample = params["sample_name"]
+    power_tol = params["power_tol"]
+    tiles = build_mosaic_tiles(
+        params["stage_x_um"],
+        params["stage_y_um"],
+        params["columns"],
+        params["rows"],
+        params["field_x_um"],
+        params["field_y_um"],
+        params["overlap"],
+        x_sign=params.get("stage_x_sign", 1),
+        y_sign=params.get("stage_y_sign", 1),
+    )
+    print(
+        f"Mosaic {params['columns']}×{params['rows']} centered on "
+        f"({params['stage_x_um']:g}, {params['stage_y_um']:g}) µm; "
+        f"{len(tiles)} tiles; overlap={params['overlap']:.0%}"
+    )
+
+    n_before = len(log["New_Filename"])
+    for tile in tqdm(tiles, desc=f"mosaic@{nm:.1f}nm"):
+        row, col = tile["row"], tile["col"]
+        print(
+            f"Tile r{row} c{col} → stage "
+            f"({tile['x_um']:.2f}, {tile['y_um']:.2f}) µm"
+        )
+        olympus.move_stage(tile["x_nm"], tile["y_nm"], escape_objective=False)
+        if not olympus.dry_run:
+            time.sleep(_STAGE_SETTLE_S)
+
+        def reassert_tile() -> None:
+            olympus.move_stage(tile["x_nm"], tile["y_nm"], escape_objective=False)
+            if not olympus.dry_run:
+                time.sleep(_STAGE_SETTLE_S)
+            if on_retry:
+                on_retry()
+
+        _acquire_with_retry(
+            laser,
+            olympus,
+            tile_sample_name(sample, row, col),
+            status,
+            log,
+            nm,
+            opo_setpoint,
+            ir_setpoint,
+            power_tol,
+            on_retry=reassert_tile,
+        )
+
+    # Return to mosaic center (current FOV).
+    center_x_nm = int(round(float(params["stage_x_um"]) * 1000.0))
+    center_y_nm = int(round(float(params["stage_y_um"]) * 1000.0))
+    olympus.move_stage(center_x_nm, center_y_nm, escape_objective=False)
+
+    new_paths = log["New_Filename"][n_before:]
+    acquired = collect_tiles_from_paths(new_paths)
+    out_dir = os.path.dirname(new_paths[-1]) if new_paths else os.getcwd()
+    tag = f"{sample}_{nm:.1f}nm"
+    manifest = os.path.join(out_dir, f"{tag}_tiles.json")
+    write_tile_manifest(
+        manifest,
+        tiles,
+        acquired,
+        meta={
+            "sample": sample,
+            "wavelength_nm": nm,
+            "overlap": params["overlap"],
+            "columns": params["columns"],
+            "rows": params["rows"],
+            "stage_x_um": params["stage_x_um"],
+            "stage_y_um": params["stage_y_um"],
+        },
+    )
+    if olympus.dry_run:
+        print("[dry-run] skip stitch (no real .oir tiles)")
+        return
+    if len(acquired) < len(tiles):
+        print(
+            f"Warning: acquired {len(acquired)}/{len(tiles)} tiles; "
+            "stitching available tiles only"
+        )
+    try:
+        stitch_path = os.path.join(out_dir, f"{tag}_mosaic.tif")
+        stitch_tiles(
+            acquired,
+            overlap_fraction=params["overlap"],
+            out_path=stitch_path,
+        )
+    except Exception as exc:
+        print(f"Stitch failed ({exc}); tile paths are in {manifest}")
+
+
+def _acquire_point(
+    laser: Laser,
+    olympus: Olympus,
+    params: dict,
+    status: str,
+    log: dict,
+    nm: float,
+    opo_setpoint,
+    ir_setpoint,
+    on_retry=None,
+) -> None:
+    """Single FOV or mosaic capture at one laser setpoint."""
+    if params.get("acquisition", "single_fov") == "mosaic":
+        _acquire_mosaic(
+            laser,
+            olympus,
+            params,
+            status,
+            log,
+            nm,
+            opo_setpoint,
+            ir_setpoint,
+            on_retry=on_retry,
+        )
+    else:
+        _acquire_with_retry(
+            laser,
+            olympus,
+            params["sample_name"],
+            status,
+            log,
+            nm,
+            opo_setpoint,
+            ir_setpoint,
+            params["power_tol"],
+            on_retry=on_retry,
+        )
+
+
 def run_sweep(laser: Laser, olympus: Olympus, params: dict, log: dict) -> None:
     """Continuous APE sweep: SWEEP START → for each λ: hold → delay → acquire → NEXT."""
     start = params["start_wavelength"]
     end = params["end_wavelength"]
     step = params["step_size"]
-    sample = params["sample_name"]
     opo_setpoint = params["opo_power"]
     ir_setpoint = params["ir_power"]
-    power_tol = params["power_tol"]
 
     # n intervals ⇒ n+1 visit points (same convention as the APE SWEEP= command).
     n = int((nm_to_tenths(end) - nm_to_tenths(start)) / (step * 10))
@@ -129,28 +285,21 @@ def run_sweep(laser: Laser, olympus: Olympus, params: dict, log: dict) -> None:
             print(f"Skip step {i} ({nm:.1f} nm): status never hold")
             continue
         laser.set_delay_nm(nm)
-        _acquire_with_retry(
+        _acquire_point(
             laser,
             olympus,
-            sample,
+            params,
             "hold",
             log,
             nm,
             opo_setpoint,
             ir_setpoint,
-            power_tol,
         )
         laser.sweep_next()
 
 
 def run_discrete(laser: Laser, olympus: Olympus, params: dict, log: dict) -> None:
-    """Multi-λ (and multi-Z via MATL) mode: one acquisition per config row.
-
-    Each row in ``params["scans"]`` sets λ, OPO power, and IR power. Olympus
-    executes the same Z-stack MATL protocol at every wavelength.
-    """
-    sample = params["sample_name"]
-    power_tol = params["power_tol"]
+    """Multi-λ mode: one acquisition (FOV or mosaic) per config row."""
     for scan in tqdm(params["scans"]):
         nm = float(scan["wavelength"])
         opo_setpoint = scan["opo_power"]
@@ -170,16 +319,15 @@ def run_discrete(laser: Laser, olympus: Olympus, params: dict, log: dict) -> Non
             laser.set_ir_power(ir_setpoint)
             laser.set_delay_nm(nm)
 
-        _acquire_with_retry(
+        _acquire_point(
             laser,
             olympus,
-            sample,
+            params,
             "OK",
             log,
             nm,
             opo_setpoint,
             ir_setpoint,
-            power_tol,
             on_retry=reassert,
         )
 

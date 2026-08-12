@@ -1,3 +1,7 @@
 pandas>=2.0
 openpyxl>=3.1
 tqdm>=4.66
+numpy>=1.24
+tifffile>=2023.1
+# Optional: required only to stitch .oir tiles after mosaic
+# aicsimageio

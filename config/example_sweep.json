@@ -1,6 +1,7 @@
 {
-  "_about": "Example sweep config: APE hardware sweeps wavelength; Olympus acquires at each hold point. opo_power/ir_power are set once and monitored within power_tol.",
+  "_about": "Example sweep config: APE hardware sweeps wavelength; Olympus acquires one FOV (MANUAL_MAIN) at each hold point. opo_power/ir_power are set once; power_tol is not enforced during sweep (status hold faults drive retries).",
   "mode": "sweep",
+  "acquisition": "single_fov",
   "sample_name": "mouse_7wk_islet1",
   "imaging_time": 0,
   "comment": "",

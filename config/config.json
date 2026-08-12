@@ -1,6 +1,7 @@
 {
-  "_about": "Multi-Z discrete scan. Z-stack depth/step live in the Olympus MATL protocol; this file only lists wavelengths and laser powers. power_tol is the allowed relative deviation of measured OPO/IR power from setpoints (0.10 = ±10%).",
+  "_about": "Discrete single-FOV scan (MANUAL_MAIN). For mosaic, set acquisition=mosaic and fill stage_x/y, columns, rows, field sizes (see example_mosaic.json). power_tol is ± relative OPO/IR tolerance (discrete only).",
   "mode": "discrete",
+  "acquisition": "single_fov",
   "sample_name": "mouse_7wk_islet1",
   "imaging_time": 0,
   "comment": "",
