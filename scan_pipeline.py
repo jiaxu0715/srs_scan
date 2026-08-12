@@ -3,16 +3,19 @@
 Pipeline role
 -------------
 Coordinates ``laser_client.Laser`` and ``olympus_client.Olympus`` for one full
-experiment. This is where multi-Z + multi-λ logic lives at the Python level:
+experiment.
 
-- **discrete mode** (typical for multi-Z): for each (λ, OPO, IR) in config,
-  tune the laser → wait for ``OK`` → call ``acquire_matl()`` → Olympus runs the
-  saved Z-stack MATL protocol once per wavelength.
-- **sweep mode**: use the APE internal sweep table; wait for ``hold`` at each
-  step instead of setting λ explicitly.
+Laser strategy (``mode``):
 
-Replaces the Excel + STEP1 VBA workflow. Logging appends one row per run to
-``YYYYMMDD.xlsx`` (legacy workbook layout).
+- **discrete**: for each (λ, OPO, IR) in config, tune → wait ``OK`` → acquire
+- **sweep**: APE sweep table; wait ``hold`` at each step → acquire
+
+Olympus strategy (``acquisition``):
+
+- **single_fov**: ``acquire_single_fov()`` / MANUAL_MAIN at the current stage
+- **matl**: ``acquire_matl()`` / Fluoview built-in MATL map (multi-area / Z)
+
+Logging appends one row per run to ``YYYYMMDD.xlsx`` (legacy workbook layout).
 """
 
 from __future__ import annotations
@@ -23,7 +26,12 @@ import time
 from datetime import datetime
 
 from laser_client import DEFAULT_HOST, DEFAULT_PORT, Laser, nm_to_tenths
-from olympus_client import DEFAULT_OLYMPUS_URL, Olympus, acquire_matl
+from olympus_client import (
+    DEFAULT_OLYMPUS_URL,
+    Olympus,
+    acquire_matl,
+    acquire_single_fov,
+)
 
 try:
     from tqdm import tqdm
@@ -33,7 +41,7 @@ except ImportError:
 
 
 def _new_log() -> dict:
-    """Empty in-memory log; filled by ``acquire_matl()`` and saved at end of run."""
+    """Empty in-memory log; filled by acquire helpers and saved at end of run."""
     return {
         "OPO_power": [],
         "IR_power": [],
@@ -59,7 +67,6 @@ def _save_log(log: dict, comment: str = "", path: str | None = None) -> str:
     try:
         import pandas as pd
 
-        # One row whose cells are the lists above (matches legacy workbook logs).
         row = {name: [values] for name, values in columns.items()}
         df = pd.DataFrame([row])
         if os.path.isfile(path):
@@ -74,6 +81,13 @@ def _save_log(log: dict, comment: str = "", path: str | None = None) -> str:
         return out
 
 
+def _acquire_fn(params: dict):
+    """Return the Olympus acquire helper for ``params['acquisition']``."""
+    if params.get("acquisition", "matl") == "single_fov":
+        return acquire_single_fov
+    return acquire_matl
+
+
 def _acquire_with_retry(
     laser,
     olympus,
@@ -84,10 +98,11 @@ def _acquire_with_retry(
     opo_setpoint,
     ir_setpoint,
     power_tol,
+    acquire,
     on_retry=None,
 ) -> None:
-    """Keep calling ``acquire_matl()`` until the laser was ready enough to start."""
-    while not acquire_matl(
+    """Keep calling *acquire* until the laser was ready enough to start."""
+    while not acquire(
         laser,
         olympus,
         sample,
@@ -111,11 +126,14 @@ def run_sweep(laser: Laser, olympus: Olympus, params: dict, log: dict) -> None:
     opo_setpoint = params["opo_power"]
     ir_setpoint = params["ir_power"]
     power_tol = params["power_tol"]
+    acquire = _acquire_fn(params)
 
-    # n intervals ⇒ n+1 visit points (same convention as the APE SWEEP= command).
     n = int((nm_to_tenths(end) - nm_to_tenths(start)) / (step * 10))
     delta = (end - start) / n if n else 0.0
-    print(f"Sweep {start:g}–{end:g} nm, step {step:g} nm ({n + 1} points)")
+    print(
+        f"Sweep {start:g}–{end:g} nm, step {step:g} nm ({n + 1} points); "
+        f"acquisition={params.get('acquisition', 'matl')}"
+    )
 
     laser.set_opo_power(opo_setpoint)
     laser.set_ir_power(ir_setpoint)
@@ -124,7 +142,6 @@ def run_sweep(laser: Laser, olympus: Olympus, params: dict, log: dict) -> None:
 
     for i in tqdm(range(n + 1)):
         nm = start + i * delta
-        # After START / NEXT the OPO retunes; wait until stable before DELAY.
         if not laser.wait_status("hold"):
             print(f"Skip step {i} ({nm:.1f} nm): status never hold")
             continue
@@ -139,18 +156,18 @@ def run_sweep(laser: Laser, olympus: Olympus, params: dict, log: dict) -> None:
             opo_setpoint,
             ir_setpoint,
             power_tol,
+            acquire,
         )
         laser.sweep_next()
 
 
 def run_discrete(laser: Laser, olympus: Olympus, params: dict, log: dict) -> None:
-    """Multi-λ (and multi-Z via MATL) mode: one acquisition per config row.
-
-    Each row in ``params["scans"]`` sets λ, OPO power, and IR power. Olympus
-    executes the same Z-stack MATL protocol at every wavelength.
-    """
+    """Multi-λ mode: one acquisition per config row (single FOV or MATL)."""
     sample = params["sample_name"]
     power_tol = params["power_tol"]
+    acquire = _acquire_fn(params)
+    print(f"Discrete scan; acquisition={params.get('acquisition', 'matl')}")
+
     for scan in tqdm(params["scans"]):
         nm = float(scan["wavelength"])
         opo_setpoint = scan["opo_power"]
@@ -164,7 +181,6 @@ def run_discrete(laser: Laser, olympus: Olympus, params: dict, log: dict) -> Non
             continue
 
         def reassert() -> None:
-            # Re-assert λ/power/delay in case a fault left the laser off-target.
             laser.set_wavelength_nm(nm)
             laser.set_opo_power(opo_setpoint)
             laser.set_ir_power(ir_setpoint)
@@ -180,6 +196,7 @@ def run_discrete(laser: Laser, olympus: Olympus, params: dict, log: dict) -> Non
             opo_setpoint,
             ir_setpoint,
             power_tol,
+            acquire,
             on_retry=reassert,
         )
 
@@ -198,7 +215,7 @@ def run_pipeline(
     log = _new_log()
     with Laser(host=laser_host, port=laser_port, dry_run=dry_run) as laser:
         laser.enable_eom()
-        time.sleep(1)  # brief hardware settle after enabling the EOM
+        time.sleep(1)
         if params["mode"] == "sweep":
             run_sweep(laser, olympus, params, log)
         else:

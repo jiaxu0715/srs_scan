@@ -1,7 +1,7 @@
 {
-  "_about": "Discrete scan. acquisition=single_fov uses MANUAL_MAIN at the current stage; acquisition=matl runs the loaded Fluoview MATL map (multi-area/Z). power_tol is ± relative OPO/IR tolerance (0.10 = ±10%).",
+  "_about": "Example discrete MATL: one Fluoview MATL protocol run per wavelength (multi-area / Z-stack live in the loaded MATL map).",
   "mode": "discrete",
-  "acquisition": "single_fov",
+  "acquisition": "matl",
   "sample_name": "mouse_7wk_islet1",
   "imaging_time": 0,
   "comment": "",

@@ -3,9 +3,11 @@
 Pipeline role
 -------------
 Defines the experiment recipe consumed by ``run_scan`` → ``scan_pipeline``.
-For multi-Z acquisition, use ``mode: "discrete"`` and list each wavelength
-with OPO/IR power. Z-stack geometry is **not** configured here — set that in
-the Olympus MATL protocol before running.
+
+- ``mode``: ``discrete`` or ``sweep`` (laser wavelength strategy)
+- ``acquisition``: ``single_fov`` (MANUAL_MAIN) or ``matl`` (Fluoview MATL map)
+
+Z-stack / multi-area geometry for MATL is configured in Fluoview, not here.
 
 JSON files may include ``"_..."`` keys for human-readable notes; they are
 ignored during validation.
@@ -16,21 +18,29 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+_SUPPORTED_ACQUISITION = {"single_fov", "matl"}
+
 
 def validate(params: dict) -> dict:
     """Normalize and type-check a parameter dict from JSON or the GUI."""
-    # Allow documentation keys like "_about" in config files.
     params = {k: v for k, v in params.items() if not str(k).startswith("_")}
 
     mode = str(params.get("mode", "")).strip().lower()
     if mode not in {"sweep", "discrete"}:
         raise ValueError("mode must be 'sweep' or 'discrete'")
+    acquisition = str(params.get("acquisition", "matl")).strip().lower()
+    if acquisition not in _SUPPORTED_ACQUISITION:
+        raise ValueError(
+            f"acquisition must be one of {sorted(_SUPPORTED_ACQUISITION)}; "
+            f"got {acquisition!r}"
+        )
     sample = str(params.get("sample_name", "")).strip()
     if not sample:
         raise ValueError("sample_name is required")
 
     out = {
         "mode": mode,
+        "acquisition": acquisition,
         "sample_name": sample,
         "imaging_time": float(params.get("imaging_time", 0) or 0),
         "comment": str(params.get("comment", "") or ""),
@@ -112,7 +122,8 @@ class ParameterDialog:
         self.sample = tk.StringVar(value="sample")
         self.imaging = tk.StringVar(value="0")
         self.comment = tk.StringVar(value="")
-        self.mode = tk.StringVar(value="sweep")
+        self.acquisition = tk.StringVar(value="matl")
+        self.mode = tk.StringVar(value="discrete")
         self.start = tk.StringVar(value="787.0")
         self.end = tk.StringVar(value="800.0")
         self.step = tk.StringVar(value="0.5")
@@ -131,13 +142,24 @@ class ParameterDialog:
             ttk.Label(frm, text=label).grid(row=i, column=0, sticky="w", **pad)
             ttk.Entry(frm, textvariable=var, width=28).grid(row=i, column=1, **pad)
 
-        ttk.Label(frm, text="Mode").grid(row=4, column=0, sticky="w", **pad)
-        box = ttk.Combobox(frm, textvariable=self.mode, values=("sweep", "discrete"), state="readonly")
-        box.grid(row=4, column=1, sticky="ew", **pad)
+        ttk.Label(frm, text="Acquisition").grid(row=4, column=0, sticky="w", **pad)
+        acq = ttk.Combobox(
+            frm,
+            textvariable=self.acquisition,
+            values=("single_fov", "matl"),
+            state="readonly",
+        )
+        acq.grid(row=4, column=1, sticky="ew", **pad)
+
+        ttk.Label(frm, text="Mode").grid(row=5, column=0, sticky="w", **pad)
+        box = ttk.Combobox(
+            frm, textvariable=self.mode, values=("sweep", "discrete"), state="readonly"
+        )
+        box.grid(row=5, column=1, sticky="ew", **pad)
         box.bind("<<ComboboxSelected>>", lambda _e: self._toggle())
 
         self.sweep = ttk.LabelFrame(frm, text="Sweep", padding=8)
-        self.sweep.grid(row=5, column=0, columnspan=2, sticky="ew", **pad)
+        self.sweep.grid(row=6, column=0, columnspan=2, sticky="ew", **pad)
         for i, (label, var) in enumerate(
             (
                 ("Start λ (nm)", self.start),
@@ -151,15 +173,17 @@ class ParameterDialog:
             ttk.Entry(self.sweep, textvariable=var, width=20).grid(row=i, column=1, **pad)
 
         self.discrete = ttk.LabelFrame(frm, text="Discrete (λ, opo, ir per line)", padding=8)
-        self.discrete.grid(row=6, column=0, columnspan=2, sticky="ew", **pad)
+        self.discrete.grid(row=7, column=0, columnspan=2, sticky="ew", **pad)
         self.scans = tk.Text(self.discrete, width=40, height=6)
         self.scans.grid(**pad)
         self.scans.insert("1.0", "787.0, 150, 200\n794.0, 150, 200\n")
 
         btns = ttk.Frame(frm)
-        btns.grid(row=7, column=0, columnspan=2, **pad)
+        btns.grid(row=8, column=0, columnspan=2, **pad)
         ttk.Button(btns, text="Cancel", command=self._cancel).grid(row=0, column=0, **pad)
-        ttk.Button(btns, text="Start", command=lambda: self._ok(messagebox)).grid(row=0, column=1, **pad)
+        ttk.Button(btns, text="Start", command=lambda: self._ok(messagebox)).grid(
+            row=0, column=1, **pad
+        )
 
         self._toggle()
         root.protocol("WM_DELETE_WINDOW", self._cancel)
@@ -177,6 +201,7 @@ class ParameterDialog:
         try:
             raw = {
                 "mode": self.mode.get(),
+                "acquisition": self.acquisition.get(),
                 "sample_name": self.sample.get(),
                 "imaging_time": float(self.imaging.get() or 0),
                 "comment": self.comment.get(),

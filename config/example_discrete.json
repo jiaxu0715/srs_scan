@@ -1,6 +1,7 @@
 {
-  "_about": "Example discrete config: one MATL Z-stack acquisition per wavelength row. power_tol is ± relative tolerance on measured OPO/IR vs setpoints.",
+  "_about": "Example discrete single-FOV: one MANUAL_MAIN capture per wavelength at the current stage. For MATL multi-area/Z, set acquisition to matl and load a MATL map in Fluoview.",
   "mode": "discrete",
+  "acquisition": "single_fov",
   "sample_name": "mouse_7wk_islet1",
   "imaging_time": 0,
   "comment": "",

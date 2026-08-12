@@ -1,22 +1,18 @@
-"""General Olympus / Fluoview XML-RPC client, plus MATL acquisition helpers.
+"""General Olympus / Fluoview XML-RPC client, plus acquisition helpers.
 
 Pipeline role
 -------------
 Microscope-side API. ``Olympus`` talks to FV over XML-RPC for parameters and
-protocol control. MATL-specific methods are named ``*_matl`` so the same
-client can grow other protocol helpers later.
+protocol control.
 
-``acquire_matl()`` runs one multi-Z (or multi-ROI) MATL cycle after the laser
-is tuned:
+``acquisition`` in the scan config selects the helper:
 
-  1. waits for the laser to reach a stable status
-  2. starts MATL (one or more .oir files per ROI / Z slice)
-  3. opens the laser shutter during the scan
-  4. watches for laser faults mid-scan and optionally rescans
-  5. renames output .oir files with sample, λ, and power tags
+- ``single_fov`` → ``acquire_single_fov()`` (``EXECUTION_TYPE_MANUAL_MAIN``)
+- ``matl`` → ``acquire_matl()`` (Olympus built-in MATL multi-area / Z-stack)
 
-**Z-stack depth, step size, and ROI layout live in the saved MATL protocol** —
-Python does not move Z.
+Both open the laser shutter **before** starting the Olympus protocol (late
+shutter cuts off the top of the FOV). Z-stack depth, step, and MATL ROI layout
+live in the saved Fluoview protocol — Python does not configure them here.
 """
 
 from __future__ import annotations
@@ -43,7 +39,7 @@ def _numeric(value) -> bool:
 
 
 class Olympus:
-    """General Fluoview XML-RPC client (parameters + MATL protocol control)."""
+    """General Fluoview XML-RPC client (parameters + protocol control)."""
 
     def __init__(self, url: str = DEFAULT_OLYMPUS_URL, *, dry_run: bool = False):
         self.dry_run = dry_run
@@ -91,13 +87,21 @@ class Olympus:
             )
 
     # --- HARDWARE MOVEMENT METHODS ---
-    def move_stage(self, x_nm: int, y_nm: int, escape_objective: bool = False):
+    def get_stage_xy(self) -> tuple[int, int]:
+        """Return absolute stage (x, y) in nanometers."""
+        if self.dry_run:
+            print("[dry-run] get_stage_xy → (0, 0)")
+            return 0, 0
+        xy = self.get_param("XY_STAGE_POSITION_SETTING")
+        return int(xy["x"]), int(xy["y"])
+
+    def move_stage(self, x_nm: int, y_nm: int, escape_objective: bool = False) -> None:
         """Moves stage to absolute X/Y nanometer coordinates."""
-        return self.set_param(
-            "XY_STAGE_POSITION_SETTING", 
-            x=x_nm, 
-            y=y_nm, 
-            escapeEnabled=escape_objective
+        self.set_param(
+            "XY_STAGE_POSITION_SETTING",
+            x=int(x_nm),
+            y=int(y_nm),
+            escapeEnabled=escape_objective,
         )
 
     def configure_z_sweep(self, start_offset_nm: int, end_offset_nm: int, step_size_nm: int):
@@ -108,27 +112,59 @@ class Olympus:
         self.set_param("LSM_Z_COORDINATE_START_SETTING", startPosition=start_offset_nm)
         self.set_param("LSM_Z_COORDINATE_END_SETTING", endPosition=end_offset_nm)
 
-    # --- PROTOCOL CONTROLS ---
-    def start_single_scan(self) -> dict:
-        """Triggers a manual single-field (XY, XYZ, or XYT) acquisition."""
+    # --- PROTOCOL CONTROLS (single FOV / MANUAL_MAIN) ---
+    def start_single(self) -> str:
+        """Start MANUAL_MAIN; returns path of the .oir the microscope will write."""
+        if self.dry_run:
+            path = os.path.join(os.getcwd(), "dryrun_area", "dryrun.oir")
+            print(f"[dry-run] Olympus start_single → {path}")
+            return path
         response = self.proxy.Protocol.startProtocol(_MANUAL)
-        if response.get("result") == "OK":
-            return response
-        raise RuntimeError(f"Failed to start manual protocol: {response.get('result')}")
+        if not isinstance(response, dict) or "targetName" not in response:
+            raise RuntimeError(
+                f"Olympus refused MANUAL_MAIN start (no targetName): {response!r}"
+            )
+        return response["targetName"][0]["name"]
+
+    def stop_single(self) -> None:
+        """Stop the running MANUAL_MAIN protocol."""
+        if self.dry_run:
+            print("[dry-run] Olympus stop_single")
+            return
+        self.proxy.Protocol.stopProtocol(_MANUAL)
+
+    def scanning_single(self) -> bool:
+        """True while Olympus reports MANUAL_MAIN is actively scanning."""
+        if self.dry_run:
+            return False
+        return self.proxy.Protocol.getProtocolProgress(_MANUAL)["state"] == "SCANNING"
 
     def is_idling(self) -> bool:
-        """Checks if the microscope has finished scanning and returned to IDLING state."""
+        """True if MANUAL_MAIN has finished and returned to IDLING."""
+        if self.dry_run:
+            return True
         progress = self.proxy.Protocol.getProtocolProgress(_MANUAL)
         return progress.get("state") == "IDLING"
 
-
+    # --- PROTOCOL CONTROLS (MATL) ---
     def start_matl(self) -> str:
         """Start MATL; returns path of the first .oir the microscope will write."""
         if self.dry_run:
             path = os.path.join(os.getcwd(), "dryrun_area", "dryrun.oir")
             print(f"[dry-run] Olympus start_matl → {path}")
             return path
-        return self.proxy.Protocol.startProtocol(_MATL)["targetName"][0]["name"]
+        progress = self.proxy.Protocol.getProtocolProgress(_MATL)
+        print(f"Olympus MATL progress before start: {progress!r}", flush=True)
+        response = self.proxy.Protocol.startProtocol(_MATL)
+        print(f"Olympus startProtocol: {response!r}", flush=True)
+        if not isinstance(response, dict) or "targetName" not in response:
+            raise RuntimeError(
+                "Olympus refused MATL start (no targetName). "
+                f"progress={progress!r} response={response!r}. "
+                "In Fluoview: load a MATL map with at least one area, "
+                "set the save folder, and leave the protocol IDLING."
+            )
+        return response["targetName"][0]["name"]
 
     def stop_matl(self) -> None:
         """Stop the running MATL protocol."""
@@ -169,7 +205,7 @@ def _rename_area(
 ) -> None:
     """Rename every .oir in the acquisition folder to a descriptive filename.
 
-    Multi-Z: one MATL run can produce several .oir files (one per slice or ROI).
+    Multi-Z / multi-ROI: one MATL run can produce several .oir files.
     Each becomes ``{sample}_roi{i}_{λ}_{opo}_{ir}{suffix}.oir``.
     """
     if not os.path.isdir(area_dir):
@@ -188,7 +224,32 @@ def _rename_area(
             print(f"Could not rename {old}")
 
 
-def acquire_matl(
+def _rename_single(
+    path: str,
+    sample: str,
+    wavelength,
+    opo,
+    ir,
+    suffix: str,
+    log: dict,
+    rescanned: bool,
+) -> None:
+    """Rename one MANUAL_MAIN .oir to ``{sample}_{λ}_{opo}_{ir}{suffix}.oir``."""
+    tag = float(wavelength) / 10.0 if _numeric(wavelength) else wavelength
+    directory = os.path.dirname(path) or os.getcwd()
+    ext = os.path.splitext(path)[1] or ".oir"
+    new = os.path.join(directory, f"{sample}_{tag}_{opo}_{ir}{suffix}{ext}")
+    log["Original_Filename"].append(path)
+    log["New_Filename"].append(new)
+    log["Rescan"].append(rescanned)
+    if not os.path.isfile(path):
+        return
+    if not _rename(path, new):
+        print(f"Could not rename {path} → {new}")
+        log["New_Filename"][-1] = path
+
+
+def acquire_single_fov(
     laser,
     olympus: Olympus,
     sample: str,
@@ -200,30 +261,24 @@ def acquire_matl(
     *,
     max_rescans: int = 3,
 ) -> bool:
-    """Run one MATL acquisition at the current laser setpoint.
+    """Run one MANUAL_MAIN single-FOV acquisition at the current laser setpoint.
 
-    *target_status* is ``"OK"`` in discrete (multi-λ / multi-Z) mode and
-    ``"hold"`` during APE hardware sweeps.
-
-    *opo_setpoint* / *ir_setpoint* / *power_tol* come from the loaded scan
-    config. Measured OPO/IR power must stay within ±*power_tol* of those
-    setpoints at start and while MATL is scanning; otherwise the acquisition
-    is treated like a status fault and rescanned.
+    *target_status* is ``"OK"`` in discrete mode and ``"hold"`` during APE
+    hardware sweeps. Power tolerance is enforced only when ``target_status``
+    is ``"OK"``.
 
     Returns False only if the laser never reaches *target_status* (caller may
-    retry the whole wavelength point). Otherwise returns True and tags .oir
-    names with ``_rescan`` / ``_failed`` / ``_invalid`` when appropriate.
+    retry the whole wavelength point).
     """
+    check_power = target_status == "OK"
 
     def append_readouts() -> bool:
-        """Record actual laser readouts immediately after MATL starts."""
         log["OPO_power"].append(laser.get_opo_power())
         log["IR_power"].append(laser.get_ir_power())
         log["OPO_WAVELENGTH"].append(laser.get_wavelength())
         return _numeric(log["OPO_power"][-1]) and _numeric(log["OPO_WAVELENGTH"][-1])
 
     def powers_ok(opo, ir) -> bool:
-        """True if OPO and IR readouts are within tolerance of config setpoints."""
         if getattr(laser, "dry_run", False) or olympus.dry_run:
             return True
         opo_ok = power_within_tol(opo, opo_setpoint, power_tol)
@@ -237,19 +292,19 @@ def acquire_matl(
         return False
 
     def watch_for_fault() -> bool:
-        """True if status or power leaves the allowed band while MATL scans."""
         if olympus.dry_run:
             return False
-        while olympus.scanning_matl():
-            if laser.status() != target_status:
-                # Open shutter so the laser can retune (same as legacy STEP1).
+        while olympus.scanning_single():
+            status = laser.status()
+            if status != target_status:
                 laser.shutter(True)
                 return True
-            opo = laser.get_opo_power()
-            ir = laser.get_ir_power()
-            if not powers_ok(opo, ir):
-                laser.shutter(True)
-                return True
+            if check_power and status == "OK":
+                opo = laser.get_opo_power()
+                ir = laser.get_ir_power()
+                if not powers_ok(opo, ir):
+                    laser.shutter(True)
+                    return True
             time.sleep(2)
         return False
 
@@ -258,19 +313,138 @@ def acquire_matl(
     interrupted = False
     rescans = 0
 
-    # First pass + up to max_rescans retries share the same body.
     while True:
         if not laser.wait_status(target_status, retries=5, interval=10):
             why = " after rescan" if rescans else ""
             print(f"Laser never reached {target_status!r}{why}")
             return False
 
-        path = olympus.start_matl()
+        # Open shutter BEFORE Olympus starts (late shutter cuts off FOV top).
+        laser.shutter(True)
+        path = olympus.start_single()
         valid = append_readouts()
-        if not powers_ok(log["OPO_power"][-1], log["IR_power"][-1]):
+        status = (
+            laser.status()
+            if not (getattr(laser, "dry_run", False) or olympus.dry_run)
+            else target_status
+        )
+        if status != target_status:
+            interrupted = True
+        elif check_power and status == "OK" and not powers_ok(
+            log["OPO_power"][-1], log["IR_power"][-1]
+        ):
             interrupted = True
         else:
-            laser.shutter(True)
+            interrupted = watch_for_fault()
+
+        if not interrupted or rescans >= max_rescans:
+            break
+
+        olympus.stop_single()
+        laser.shutter(False)
+        rescans += 1
+
+    laser.shutter(False)
+    olympus.stop_single()
+
+    suffix = "_failed" if interrupted else ("_rescan" if rescans else "")
+    if not valid:
+        suffix += "_invalid"
+    _rename_single(
+        path,
+        sample,
+        log["OPO_WAVELENGTH"][-1],
+        log["OPO_power"][-1],
+        log["IR_power"][-1],
+        suffix,
+        log,
+        rescans > 0,
+    )
+    return True
+
+
+def acquire_matl(
+    laser,
+    olympus: Olympus,
+    sample: str,
+    target_status: str,
+    log: dict,
+    opo_setpoint,
+    ir_setpoint,
+    power_tol,
+    *,
+    max_rescans: int = 3,
+) -> bool:
+    """Run one Olympus MATL acquisition at the current laser setpoint.
+
+    Uses the loaded Fluoview MATL map (multi-area / Z-stack). Power tolerance
+    is enforced only when ``target_status`` is ``"OK"``.
+    """
+    check_power = target_status == "OK"
+
+    def append_readouts() -> bool:
+        log["OPO_power"].append(laser.get_opo_power())
+        log["IR_power"].append(laser.get_ir_power())
+        log["OPO_WAVELENGTH"].append(laser.get_wavelength())
+        return _numeric(log["OPO_power"][-1]) and _numeric(log["OPO_WAVELENGTH"][-1])
+
+    def powers_ok(opo, ir) -> bool:
+        if getattr(laser, "dry_run", False) or olympus.dry_run:
+            return True
+        opo_ok = power_within_tol(opo, opo_setpoint, power_tol)
+        ir_ok = power_within_tol(ir, ir_setpoint, power_tol)
+        if opo_ok and ir_ok:
+            return True
+        print(
+            f"Power out of tol (±{float(power_tol):.0%}): "
+            f"OPO {opo!r} vs {opo_setpoint}, IR {ir!r} vs {ir_setpoint}"
+        )
+        return False
+
+    def watch_for_fault() -> bool:
+        if olympus.dry_run:
+            return False
+        while olympus.scanning_matl():
+            status = laser.status()
+            if status != target_status:
+                laser.shutter(True)
+                return True
+            if check_power and status == "OK":
+                opo = laser.get_opo_power()
+                ir = laser.get_ir_power()
+                if not powers_ok(opo, ir):
+                    laser.shutter(True)
+                    return True
+            time.sleep(2)
+        return False
+
+    path = ""
+    valid = False
+    interrupted = False
+    rescans = 0
+
+    while True:
+        if not laser.wait_status(target_status, retries=5, interval=10):
+            why = " after rescan" if rescans else ""
+            print(f"Laser never reached {target_status!r}{why}")
+            return False
+
+        # Open shutter BEFORE Olympus starts.
+        laser.shutter(True)
+        path = olympus.start_matl()
+        valid = append_readouts()
+        status = (
+            laser.status()
+            if not (getattr(laser, "dry_run", False) or olympus.dry_run)
+            else target_status
+        )
+        if status != target_status:
+            interrupted = True
+        elif check_power and status == "OK" and not powers_ok(
+            log["OPO_power"][-1], log["IR_power"][-1]
+        ):
+            interrupted = True
+        else:
             interrupted = watch_for_fault()
 
         if not interrupted or rescans >= max_rescans:
