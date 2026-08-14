@@ -84,7 +84,7 @@ class Laser:
     def __exit__(self, *_exc) -> None:
         self.close()
 
-    def cmd(self, command: str) -> str:
+    def cmd(self, command: str, *, quiet: bool = False) -> str:
         """Send one raw APE command; log and normalize empty set-command replies."""
         command = str(command).strip()
         if self.dry_run:
@@ -99,33 +99,62 @@ class Laser:
             raise
         if response == "" and not command.endswith("?"):
             response = "OK"
-        # STATUS? is polled heavily while tuning; skip console spam.
-        if command.upper() != "STATUS?":
+        # STATUS? / shutter queries are polled heavily during a scan; skip console spam.
+        if not quiet and command.upper() not in {"STATUS?", "SYSTEM SHUTTER?"}:
             print(f"laser ← {command!r} → {response!r}")
         return response
 
     def status(self) -> str:
         return self.cmd("STATUS?")
 
-    def wait_status(self, target: str = "OK", *, retries: int = 1000, interval: float = 3.0) -> bool:
-        """Poll ``STATUS?`` until it equals *target* (``OK`` for discrete, ``hold`` for sweep).
+    def restore_power(self, opo_setpoint, ir_setpoint) -> None:
+        """Re-send config OPO/IR setpoints (used when measured power drifts)."""
+        print(f"Resetting laser power to OPO={opo_setpoint}, IR={ir_setpoint}")
+        self.set_opo_power(opo_setpoint)
+        self.set_ir_power(ir_setpoint)
 
+    def wait_status(
+        self,
+        target: str | tuple[str, ...] = "OK",
+        *,
+        retries: int = 1000,
+        interval: float = 3.0,
+    ) -> bool:
+        """Poll ``STATUS?`` until it matches *target* (``OK`` for discrete, ``hold`` for sweep).
+
+        *target* may be one status string or a tuple of acceptable statuses.
         Prefer this over a fixed sleep after wavelength changes — returns as soon
         as tuning finishes instead of waiting a worst-case settle time.
         """
         if self.dry_run:
             return True
+        targets = {target} if isinstance(target, str) else set(target)
         for _attempt in range(retries):
-            current = self.status()
-            if current == target:
+            current = str(self.status()).strip()
+            if current in targets:
                 return True
             time.sleep(interval)
-        print(f"Laser status never reached {target!r} after {retries} polls")
+        print(f"Laser status never reached {sorted(targets)!r} after {retries} polls")
         return False
 
     def shutter(self, open_: bool) -> str:
         """Open/close the system shutter that gates excitation during acquisition."""
         return self.cmd(f"System Shutter={1 if open_ else 0}")
+
+    def shutter_is_open(self) -> bool:
+        """True if ``System Shutter?`` reports open (1). Dry-run always True."""
+        if self.dry_run:
+            return True
+        raw = str(self.cmd("System Shutter?", quiet=True)).strip()
+        try:
+            return float(raw) != 0
+        except (TypeError, ValueError):
+            lowered = raw.lower()
+            if lowered in {"on", "open", "true"}:
+                return True
+            if lowered in {"off", "closed", "close", "false", ""}:
+                return False
+            return False
 
     def enable_eom(self) -> str:
         """Enable the electro-optic modulator (done once at the start of a run)."""

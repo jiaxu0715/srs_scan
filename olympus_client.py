@@ -28,8 +28,12 @@ from laser_client import power_within_tol
 DEFAULT_OLYMPUS_URL = "http://127.0.0.1:8080/xmlrpc"
 _MATL = {"executionType": "EXECUTION_TYPE_MATL"}
 _MANUAL = {"executionType": "EXECUTION_TYPE_MANUAL_MAIN"}
-# How often to poll Protocol.getProtocolProgress while waiting for SCANNING to end.
-_SCAN_POLL_S = 0.25
+# Status strings that mean the laser is ready to image (sweep may report
+# either ``hold`` or ``OK`` once a step is reached / if power is adjusted).
+_SCAN_READY = ("OK", "hold")
+# How often to poll OPO/IR power, shutter, and STATUS while Olympus is scanning.
+_SCAN_POLL_S = 0.5
+_MAX_RESCANS = 5
 
 
 def _numeric(value) -> bool:
@@ -39,6 +43,26 @@ def _numeric(value) -> bool:
         return True
     except (TypeError, ValueError):
         return False
+
+
+def _status_ready(status) -> bool:
+    """True if the laser is at a sweep hold or discrete OK (not tuning/error)."""
+    return str(status).strip() in _SCAN_READY
+
+
+def _shutter_still_open(laser, olympus) -> bool:
+    """True if the system shutter is still open; logs and returns False if it dropped."""
+    if getattr(laser, "dry_run", False) or getattr(olympus, "dry_run", False):
+        return True
+    if laser.shutter_is_open():
+        return True
+    print("Shutter closed unexpectedly during acquisition")
+    return False
+
+
+def _restore_laser_power(laser, opo_setpoint, ir_setpoint) -> None:
+    """Re-send config OPO/IR setpoints after a power-tolerance fault."""
+    laser.restore_power(opo_setpoint, ir_setpoint)
 
 
 class Olympus:
@@ -262,22 +286,23 @@ def acquire_single_fov(
     ir_setpoint,
     power_tol,
     *,
-    max_rescans: int = 3,
+    max_rescans: int = _MAX_RESCANS,
     power_monitor=None,
 ) -> bool:
     """Run one MANUAL_MAIN single-FOV acquisition at the current laser setpoint.
 
     *target_status* is ``"OK"`` in discrete mode and ``"hold"`` during APE
-    hardware sweeps. Power tolerance is enforced only when ``target_status``
-    is ``"OK"``. When *power_monitor* is set, OPO/IR are sampled on every
-    poll (and the initial readout) for high/low/mean logging.
+    hardware sweeps. During the Olympus scan, OPO/IR are compared to the
+    config setpoints regardless of whether STATUS is ``OK`` or ``hold``
+    (changing power in sweep often leaves STATUS at ``OK``). The system
+    shutter is polled and must stay open until this function closes it.
+    Out-of-tol power or an unexpected shutter close re-applies setpoints
+    (power) / re-opens the shutter and rescans. When *power_monitor* is
+    set, OPO/IR are sampled on every scan poll for high/low/mean logging.
 
-    Returns False only if the laser never reaches *target_status* (caller may
+    Returns False only if the laser never reaches a ready status (caller may
     retry the whole wavelength point).
     """
-    check_power = target_status == "OK"
-    track_power = power_monitor is not None or check_power
-
     def append_readouts() -> bool:
         opo = laser.get_opo_power()
         ir = laser.get_ir_power()
@@ -305,18 +330,19 @@ def acquire_single_fov(
         if olympus.dry_run:
             return False
         while olympus.scanning_single():
-            status = laser.status()
-            if status != target_status:
+            opo = laser.get_opo_power()
+            ir = laser.get_ir_power()
+            if power_monitor is not None:
+                power_monitor.sample(opo, ir)
+            if not powers_ok(opo, ir):
                 laser.shutter(True)
                 return True
-            if track_power:
-                opo = laser.get_opo_power()
-                ir = laser.get_ir_power()
-                if power_monitor is not None:
-                    power_monitor.sample(opo, ir)
-                if check_power and status == "OK" and not powers_ok(opo, ir):
-                    laser.shutter(True)
-                    return True
+            if not _shutter_still_open(laser, olympus):
+                return True
+            status = laser.status()
+            if not _status_ready(status):
+                laser.shutter(True)
+                return True
             time.sleep(_SCAN_POLL_S)
         return False
 
@@ -326,7 +352,7 @@ def acquire_single_fov(
     rescans = 0
 
     while True:
-        if not laser.wait_status(target_status, retries=5, interval=10):
+        if not laser.wait_status(_SCAN_READY, retries=5, interval=10):
             why = " after rescan" if rescans else ""
             print(f"Laser never reached {target_status!r}{why}")
             return False
@@ -340,11 +366,11 @@ def acquire_single_fov(
             if not (getattr(laser, "dry_run", False) or olympus.dry_run)
             else target_status
         )
-        if status != target_status:
+        if not powers_ok(log["OPO_power"][-1], log["IR_power"][-1]):
             interrupted = True
-        elif check_power and status == "OK" and not powers_ok(
-            log["OPO_power"][-1], log["IR_power"][-1]
-        ):
+        elif not _shutter_still_open(laser, olympus):
+            interrupted = True
+        elif not _status_ready(status):
             interrupted = True
         else:
             interrupted = watch_for_fault()
@@ -354,6 +380,7 @@ def acquire_single_fov(
 
         olympus.stop_single()
         laser.shutter(False)
+        _restore_laser_power(laser, opo_setpoint, ir_setpoint)
         rescans += 1
 
     laser.shutter(False)
@@ -385,18 +412,18 @@ def acquire_matl(
     ir_setpoint,
     power_tol,
     *,
-    max_rescans: int = 3,
+    max_rescans: int = _MAX_RESCANS,
     power_monitor=None,
 ) -> bool:
     """Run one Olympus MATL acquisition at the current laser setpoint.
 
-    Uses the loaded Fluoview MATL map (multi-area / Z-stack). Power tolerance
-    is enforced only when ``target_status`` is ``"OK"``. When *power_monitor*
-    is set, OPO/IR are sampled on every poll for high/low/mean logging.
+    Uses the loaded Fluoview MATL map (multi-area / Z-stack). During the
+    Olympus scan, OPO/IR are compared to the config setpoints for both
+    discrete (``OK``) and sweep (``hold`` or ``OK``). The system shutter
+    is polled and must stay open until this function closes it. Out-of-tol
+    readings re-apply those setpoints, then rescan. When *power_monitor*
+    is set, OPO/IR are sampled on every scan poll for high/low/mean logging.
     """
-    check_power = target_status == "OK"
-    track_power = power_monitor is not None or check_power
-
     def append_readouts() -> bool:
         opo = laser.get_opo_power()
         ir = laser.get_ir_power()
@@ -424,18 +451,19 @@ def acquire_matl(
         if olympus.dry_run:
             return False
         while olympus.scanning_matl():
-            status = laser.status()
-            if status != target_status:
+            opo = laser.get_opo_power()
+            ir = laser.get_ir_power()
+            if power_monitor is not None:
+                power_monitor.sample(opo, ir)
+            if not powers_ok(opo, ir):
                 laser.shutter(True)
                 return True
-            if track_power:
-                opo = laser.get_opo_power()
-                ir = laser.get_ir_power()
-                if power_monitor is not None:
-                    power_monitor.sample(opo, ir)
-                if check_power and status == "OK" and not powers_ok(opo, ir):
-                    laser.shutter(True)
-                    return True
+            if not _shutter_still_open(laser, olympus):
+                return True
+            status = laser.status()
+            if not _status_ready(status):
+                laser.shutter(True)
+                return True
             time.sleep(_SCAN_POLL_S)
         return False
 
@@ -445,7 +473,7 @@ def acquire_matl(
     rescans = 0
 
     while True:
-        if not laser.wait_status(target_status, retries=5, interval=10):
+        if not laser.wait_status(_SCAN_READY, retries=5, interval=10):
             why = " after rescan" if rescans else ""
             print(f"Laser never reached {target_status!r}{why}")
             return False
@@ -459,11 +487,11 @@ def acquire_matl(
             if not (getattr(laser, "dry_run", False) or olympus.dry_run)
             else target_status
         )
-        if status != target_status:
+        if not powers_ok(log["OPO_power"][-1], log["IR_power"][-1]):
             interrupted = True
-        elif check_power and status == "OK" and not powers_ok(
-            log["OPO_power"][-1], log["IR_power"][-1]
-        ):
+        elif not _shutter_still_open(laser, olympus):
+            interrupted = True
+        elif not _status_ready(status):
             interrupted = True
         else:
             interrupted = watch_for_fault()
@@ -473,6 +501,7 @@ def acquire_matl(
 
         olympus.stop_matl()
         laser.shutter(False)
+        _restore_laser_power(laser, opo_setpoint, ir_setpoint)
         rescans += 1
 
     laser.shutter(False)

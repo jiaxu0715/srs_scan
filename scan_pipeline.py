@@ -129,6 +129,8 @@ def _acquire_with_retry(
         power_monitor=power_monitor,
     ):
         print(f"Retrying {nm:.1f} nm…")
+        laser.set_opo_power(opo_setpoint)
+        laser.set_ir_power(ir_setpoint)
         if on_retry:
             on_retry()
 
