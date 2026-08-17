@@ -238,8 +238,8 @@ def _rename_area(
 
     Multi-Z / multi-ROI: one MATL run can produce several .oir files.
     Each becomes ``{sample}_roi{i}_{λ}_{opo}_{ir}{suffix}.oir``.
-    Fluoview also writes a small ``Map_*.oir`` overview; those are left as-is
-    so they do not shift the ROI index.
+    Fluoview also writes small ``Map_*.oir`` / ``Stitch_*.oir`` overviews;
+    those are left as-is so they do not shift the ROI index.
     """
     if not os.path.isdir(area_dir):
         return
@@ -248,7 +248,7 @@ def _rename_area(
     files = sorted(
         f
         for f in os.listdir(area_dir)
-        if f.endswith(".oir") and "map" not in f.lower()
+        if f.endswith(".oir") and "map" not in f.lower() and "stitch" not in f.lower()
     )
     for i, name in enumerate(files, start=1):
         old = os.path.join(area_dir, name)
