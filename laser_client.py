@@ -25,6 +25,8 @@ from ape_device import ape_device
 DEFAULT_HOST = "10.84.172.229"
 DEFAULT_PORT = 51100
 
+# Drop power to 0 this long before restoring setpoints on a power-tol retry.
+_POWER_RETUNE_S = 3.0
 # Delay stage calibration used in STEP1 (same linear fit as the Excel scripts).
 DELAY_SLOPE = -1.6336
 DELAY_INTERCEPT = 9527.2
@@ -84,8 +86,12 @@ class Laser:
     def __exit__(self, *_exc) -> None:
         self.close()
 
-    def cmd(self, command: str, *, quiet: bool = False) -> str:
-        """Send one raw APE command; log and normalize empty set-command replies."""
+    def cmd(self, command: str) -> str:
+        """Send one raw APE command; normalize empty set-command replies.
+
+        Routine command/response traffic is silent. Callers print measured
+        values only on retry or out-of-tolerance faults.
+        """
         command = str(command).strip()
         if self.dry_run:
             print(f"[dry-run] {command}")
@@ -99,17 +105,26 @@ class Laser:
             raise
         if response == "" and not command.endswith("?"):
             response = "OK"
-        # STATUS? / shutter queries are polled heavily during a scan; skip console spam.
-        if not quiet and command.upper() not in {"STATUS?", "SYSTEM SHUTTER?"}:
-            print(f"laser ← {command!r} → {response!r}")
         return response
 
     def status(self) -> str:
         return self.cmd("STATUS?")
 
-    def restore_power(self, opo_setpoint, ir_setpoint) -> None:
-        """Re-send config OPO/IR setpoints (used when measured power drifts)."""
-        print(f"Resetting laser power to OPO={opo_setpoint}, IR={ir_setpoint}")
+    def restore_power(self, opo_setpoint, ir_setpoint, *, settle_s: float = _POWER_RETUNE_S) -> None:
+        """Zero OPO/IR, wait, then re-apply config setpoints so the laser retunes.
+
+        STATUS can stay ``OK`` while measured power is out of tol; a direct
+        re-set is ignored. Dropping to 0 forces a retune, then we restore
+        the config targets.
+        """
+        print(
+            f"Power retune: OPO/IR → 0 for {float(settle_s):.0f}s, "
+            f"then OPO={opo_setpoint}, IR={ir_setpoint}"
+        )
+        self.set_opo_power(0)
+        self.set_ir_power(0)
+        if not self.dry_run:
+            time.sleep(float(settle_s))
         self.set_opo_power(opo_setpoint)
         self.set_ir_power(ir_setpoint)
 
@@ -145,7 +160,7 @@ class Laser:
         """True if ``System Shutter?`` reports open (1). Dry-run always True."""
         if self.dry_run:
             return True
-        raw = str(self.cmd("System Shutter?", quiet=True)).strip()
+        raw = str(self.cmd("System Shutter?")).strip()
         try:
             return float(raw) != 0
         except (TypeError, ValueError):

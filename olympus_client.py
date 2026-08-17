@@ -60,8 +60,12 @@ def _shutter_still_open(laser, olympus) -> bool:
     return False
 
 
+def _log_status_retry(status) -> None:
+    print(f"Laser status {status!r} during acquisition; retrying")
+
+
 def _restore_laser_power(laser, opo_setpoint, ir_setpoint) -> None:
-    """Re-send config OPO/IR setpoints after a power-tolerance fault."""
+    """On retry: OPO/IR → 0, pause, then restore config setpoints."""
     laser.restore_power(opo_setpoint, ir_setpoint)
 
 
@@ -341,6 +345,7 @@ def acquire_single_fov(
                 return True
             status = laser.status()
             if not _status_ready(status):
+                _log_status_retry(status)
                 laser.shutter(True)
                 return True
             time.sleep(_SCAN_POLL_S)
@@ -371,6 +376,7 @@ def acquire_single_fov(
         elif not _shutter_still_open(laser, olympus):
             interrupted = True
         elif not _status_ready(status):
+            _log_status_retry(status)
             interrupted = True
         else:
             interrupted = watch_for_fault()
@@ -462,6 +468,7 @@ def acquire_matl(
                 return True
             status = laser.status()
             if not _status_ready(status):
+                _log_status_retry(status)
                 laser.shutter(True)
                 return True
             time.sleep(_SCAN_POLL_S)
@@ -492,6 +499,7 @@ def acquire_matl(
         elif not _shutter_still_open(laser, olympus):
             interrupted = True
         elif not _status_ready(status):
+            _log_status_retry(status)
             interrupted = True
         else:
             interrupted = watch_for_fault()
