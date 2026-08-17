@@ -238,12 +238,18 @@ def _rename_area(
 
     Multi-Z / multi-ROI: one MATL run can produce several .oir files.
     Each becomes ``{sample}_roi{i}_{λ}_{opo}_{ir}{suffix}.oir``.
+    Fluoview also writes a small ``Map_*.oir`` overview; those are left as-is
+    so they do not shift the ROI index.
     """
     if not os.path.isdir(area_dir):
         return
     # Laser reports λ in tenths of nm; filenames use nm.
     tag = float(wavelength) / 10.0 if _numeric(wavelength) else wavelength
-    files = sorted(f for f in os.listdir(area_dir) if f.endswith(".oir"))
+    files = sorted(
+        f
+        for f in os.listdir(area_dir)
+        if f.endswith(".oir") and "map" not in f.lower()
+    )
     for i, name in enumerate(files, start=1):
         old = os.path.join(area_dir, name)
         new = os.path.join(area_dir, f"{sample}_roi{i}_{tag}_{opo}_{ir}{suffix}.oir")
