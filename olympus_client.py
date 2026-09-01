@@ -10,11 +10,10 @@ protocol control.
 - ``single_fov`` → ``acquire_single_fov()`` (``EXECUTION_TYPE_MANUAL_MAIN``)
 - ``matl`` → ``acquire_matl()`` (Olympus built-in MATL multi-area / Z-stack)
 
-Both start the Olympus protocol first, then open the laser shutter after a
-short delay so the beam is not parked on the FOV centre. Optional
-``power_monitor`` samples OPO/IR on each poll for per-wavelength high/low/mean
-JSON. Z-stack depth, step, and MATL ROI layout live in the Fluoview protocol —
-Python does not set them here.
+Both open the laser shutter **before** starting the Olympus protocol (late
+shutter cuts off the top of the FOV). Optional ``power_monitor`` samples OPO/IR
+on each poll for per-wavelength high/low/mean JSON. Z-stack depth, step, and
+MATL ROI layout live in the Fluoview protocol — Python does not set them here.
 """
 
 from __future__ import annotations
@@ -35,9 +34,6 @@ _SCAN_READY = ("OK", "hold")
 # How often to poll OPO/IR power, shutter, and STATUS while Olympus is scanning.
 _SCAN_POLL_S = 0.5
 _MAX_RESCANS = 5
-# Expected Fluoview delay from startProtocol until the raster actually begins.
-# Shutter opens when this elapses (or immediately if the RPC already took longer).
-_SHUTTER_AFTER_START_S = 0.080
 
 
 def _numeric(value) -> bool:
@@ -71,23 +67,6 @@ def _log_status_retry(status) -> None:
 def _restore_laser_power(laser, opo_setpoint, ir_setpoint) -> None:
     """On retry: OPO/IR → 0, pause, then restore config setpoints."""
     laser.restore_power(opo_setpoint, ir_setpoint)
-
-
-def _start_then_open_shutter(laser, olympus, start_fn) -> str:
-    """Start Olympus, then open the shutter when Fluoview should be scanning.
-
-    Deadline is ``_SHUTTER_AFTER_START_S`` from the moment *start_fn* is called.
-    If the XML-RPC already used that budget, the shutter opens immediately on
-    return so we do not add extra dark lines at the top of the FOV.
-    """
-    deadline = time.perf_counter() + _SHUTTER_AFTER_START_S
-    path = start_fn()
-    if not getattr(laser, "dry_run", False) and not getattr(olympus, "dry_run", False):
-        remaining = deadline - time.perf_counter()
-        if remaining > 0:
-            time.sleep(remaining)
-    laser.shutter(True)
-    return path
 
 
 class Olympus:
@@ -199,22 +178,14 @@ class Olympus:
         return progress.get("state") == "IDLING"
 
     # --- PROTOCOL CONTROLS (MATL) ---
-    def matl_progress(self) -> dict:
-        """Return MATL protocol progress; used before start while the shutter is closed."""
-        if self.dry_run:
-            return {}
-        progress = self.proxy.Protocol.getProtocolProgress(_MATL)
-        print(f"Olympus MATL progress before start: {progress!r}", flush=True)
-        return progress
-
-    def start_matl(self, *, progress=None) -> str:
+    def start_matl(self) -> str:
         """Start MATL; returns path of the first .oir the microscope will write."""
         if self.dry_run:
             path = os.path.join(os.getcwd(), "dryrun_area", "dryrun.oir")
             print(f"[dry-run] Olympus start_matl → {path}")
             return path
-        if progress is None:
-            progress = self.matl_progress()
+        progress = self.proxy.Protocol.getProtocolProgress(_MATL)
+        print(f"Olympus MATL progress before start: {progress!r}", flush=True)
         response = self.proxy.Protocol.startProtocol(_MATL)
         print(f"Olympus startProtocol: {response!r}", flush=True)
         if not isinstance(response, dict) or "targetName" not in response:
@@ -334,9 +305,7 @@ def acquire_single_fov(
     hardware sweeps. During the Olympus scan, OPO/IR are compared to the
     config setpoints regardless of whether STATUS is ``OK`` or ``hold``
     (changing power in sweep often leaves STATUS at ``OK``). The system
-    shutter opens ``_SHUTTER_AFTER_START_S`` after Olympus
-    ``startProtocol`` is issued (or immediately if that RPC already took
-    longer). It is polled and must stay open until this function closes it.
+    shutter is polled and must stay open until this function closes it.
     Out-of-tol power or an unexpected shutter close re-applies setpoints
     (power) / re-opens the shutter and rescans. When *power_monitor* is
     set, OPO/IR are sampled on every scan poll for high/low/mean logging.
@@ -399,8 +368,9 @@ def acquire_single_fov(
             print(f"Laser never reached {target_status!r}{why}")
             return False
 
-        # Start Olympus first; shutter opens after the expected raster-start delay.
-        path = _start_then_open_shutter(laser, olympus, olympus.start_single)
+        # Open shutter BEFORE Olympus starts (late shutter cuts off FOV top).
+        laser.shutter(True)
+        path = olympus.start_single()
         valid = append_readouts()
         status = (
             laser.status()
@@ -462,8 +432,7 @@ def acquire_matl(
     Uses the loaded Fluoview MATL map (multi-area / Z-stack). During the
     Olympus scan, OPO/IR are compared to the config setpoints for both
     discrete (``OK``) and sweep (``hold`` or ``OK``). The system shutter
-    opens ``_SHUTTER_AFTER_START_S`` after ``startProtocol`` is issued.
-    It is polled and must stay open until this function closes it. Out-of-tol
+    is polled and must stay open until this function closes it. Out-of-tol
     readings re-apply those setpoints, then rescan. When *power_monitor*
     is set, OPO/IR are sampled on every scan poll for high/low/mean logging.
     """
@@ -522,11 +491,9 @@ def acquire_matl(
             print(f"Laser never reached {target_status!r}{why}")
             return False
 
-        # Progress query with shutter still closed; timer starts at startProtocol.
-        progress = olympus.matl_progress()
-        path = _start_then_open_shutter(
-            laser, olympus, lambda: olympus.start_matl(progress=progress)
-        )
+        # Open shutter BEFORE Olympus starts.
+        laser.shutter(True)
+        path = olympus.start_matl()
         valid = append_readouts()
         status = (
             laser.status()
