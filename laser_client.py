@@ -17,6 +17,7 @@ runs the Z-stack defined in the saved microscope protocol.
 
 from __future__ import annotations
 
+import socket
 import time
 
 from ape_device import ape_device
@@ -28,8 +29,10 @@ DEFAULT_PORT = 51100
 # Drop power to 0 this long before restoring setpoints on a power-tol retry.
 _POWER_RETUNE_S = 3.0
 # Delay stage calibration used in STEP1 (same linear fit as the Excel scripts).
-DELAY_SLOPE = -1.6336
-DELAY_INTERCEPT = 9527.2
+DELAY_SLOPE = -10.181
+#DELAY_SLOPE = -1.6336
+DELAY_INTERCEPT = 16563
+#DELAY_INTERCEPT = 9527.2
 
 
 def nm_to_tenths(wavelength_nm: float) -> int:
@@ -66,6 +69,7 @@ class Laser:
     ):
         self.dry_run = dry_run
         self.dev = None
+        self._timeout_s = float(timeout_s)
         if dry_run:
             print(f"[dry-run] would connect to {host}:{port}")
             return
@@ -73,7 +77,7 @@ class Laser:
         if not self.dev.connected or self.dev.dev is None:
             raise RuntimeError(f"Failed to connect to APE laser at {host}:{port}")
         # Set-commands often send no reply; without a timeout receive() hangs forever.
-        self.dev.dev.settimeout(float(timeout_s))
+        self.dev.dev.settimeout(self._timeout_s)
 
     def close(self) -> None:
         if self.dev is not None and self.dev.connected:
@@ -86,6 +90,26 @@ class Laser:
     def __exit__(self, *_exc) -> None:
         self.close()
 
+    def _drain_rx(self) -> None:
+        """Discard leftover bytes so a late set-command reply cannot poison a query."""
+        if self.dry_run or self.dev is None or self.dev.dev is None:
+            return
+        sock = self.dev.dev
+        old = sock.gettimeout()
+        try:
+            sock.settimeout(0.0)
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+        except (BlockingIOError, ConnectionResetError, OSError, socket.timeout):
+            pass
+        finally:
+            try:
+                sock.settimeout(old if old is not None else self._timeout_s)
+            except OSError:
+                pass
+
     def cmd(self, command: str) -> str:
         """Send one raw APE command; normalize empty set-command replies.
 
@@ -96,6 +120,8 @@ class Laser:
         if self.dry_run:
             print(f"[dry-run] {command}")
             return "OK" if command.upper() == "STATUS?" or not command.endswith("?") else "0"
+        if command.endswith("?"):
+            self._drain_rx()
         try:
             response = self.dev.query(command)
         except Exception:
@@ -153,8 +179,20 @@ class Laser:
         return False
 
     def shutter(self, open_: bool) -> str:
-        """Open/close the system shutter that gates excitation during acquisition."""
-        return self.cmd(f"System Shutter={1 if open_ else 0}")
+        """Open/close the system shutter that gates excitation during acquisition.
+
+        Sends the set-command and returns immediately. APE often sends no ACK;
+        waiting for one parks the beam until the 5 s socket timeout, then
+        Fluoview start is delayed by that same gap.
+        """
+        command = f"System Shutter={1 if open_ else 0}"
+        if self.dry_run:
+            print(f"[dry-run] {command}")
+            return "OK"
+        if self.dev is None:
+            raise RuntimeError("Laser is not connected")
+        self.dev.send(command)
+        return "OK"
 
     def shutter_is_open(self) -> bool:
         """True if ``System Shutter?`` reports open (1). Dry-run always True."""

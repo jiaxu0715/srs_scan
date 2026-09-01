@@ -10,8 +10,9 @@ protocol control.
 - ``single_fov`` → ``acquire_single_fov()`` (``EXECUTION_TYPE_MANUAL_MAIN``)
 - ``matl`` → ``acquire_matl()`` (Olympus built-in MATL multi-area / Z-stack)
 
-Both open the laser shutter **before** starting the Olympus protocol (late
-shutter cuts off the top of the FOV). Optional ``power_monitor`` samples OPO/IR
+Both open the laser shutter then immediately start the Olympus protocol (late
+shutter cuts off the top of the FOV). The shutter set-command is not waited
+on — APE often sends no ACK. Optional ``power_monitor`` samples OPO/IR
 on each poll for per-wavelength high/low/mean JSON. Z-stack depth, step, and
 MATL ROI layout live in the Fluoview protocol — Python does not set them here.
 """
@@ -178,14 +179,22 @@ class Olympus:
         return progress.get("state") == "IDLING"
 
     # --- PROTOCOL CONTROLS (MATL) ---
-    def start_matl(self) -> str:
+    def matl_progress(self) -> dict:
+        """MATL protocol progress; call while the shutter is still closed."""
+        if self.dry_run:
+            return {}
+        progress = self.proxy.Protocol.getProtocolProgress(_MATL)
+        print(f"Olympus MATL progress before start: {progress!r}", flush=True)
+        return progress
+
+    def start_matl(self, *, progress=None) -> str:
         """Start MATL; returns path of the first .oir the microscope will write."""
         if self.dry_run:
             path = os.path.join(os.getcwd(), "dryrun_area", "dryrun.oir")
             print(f"[dry-run] Olympus start_matl → {path}")
             return path
-        progress = self.proxy.Protocol.getProtocolProgress(_MATL)
-        print(f"Olympus MATL progress before start: {progress!r}", flush=True)
+        if progress is None:
+            progress = self.matl_progress()
         response = self.proxy.Protocol.startProtocol(_MATL)
         print(f"Olympus startProtocol: {response!r}", flush=True)
         if not isinstance(response, dict) or "targetName" not in response:
@@ -368,7 +377,7 @@ def acquire_single_fov(
             print(f"Laser never reached {target_status!r}{why}")
             return False
 
-        # Open shutter BEFORE Olympus starts (late shutter cuts off FOV top).
+        # Open shutter then start immediately (do not wait for an APE shutter ACK).
         laser.shutter(True)
         path = olympus.start_single()
         valid = append_readouts()
@@ -491,9 +500,10 @@ def acquire_matl(
             print(f"Laser never reached {target_status!r}{why}")
             return False
 
-        # Open shutter BEFORE Olympus starts.
+        # Progress query with shutter closed; then open shutter and start immediately.
+        progress = olympus.matl_progress()
         laser.shutter(True)
-        path = olympus.start_matl()
+        path = olympus.start_matl(progress=progress)
         valid = append_readouts()
         status = (
             laser.status()
