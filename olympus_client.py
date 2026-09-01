@@ -10,11 +10,11 @@ protocol control.
 - ``single_fov`` → ``acquire_single_fov()`` (``EXECUTION_TYPE_MANUAL_MAIN``)
 - ``matl`` → ``acquire_matl()`` (Olympus built-in MATL multi-area / Z-stack)
 
-Both open the laser shutter then immediately start the Olympus protocol (late
-shutter cuts off the top of the FOV). The shutter set-command is not waited
-on — APE often sends no ACK. Optional ``power_monitor`` samples OPO/IR
-on each poll for per-wavelength high/low/mean JSON. Z-stack depth, step, and
-MATL ROI layout live in the Fluoview protocol — Python does not set them here.
+Both open the laser shutter (send, 150 ms settle, no ACK wait) then start the
+Olympus protocol. ``System Shutter?`` is still polled during the scan as
+before. Optional ``power_monitor`` samples OPO/IR on each poll for
+per-wavelength high/low/mean JSON. Z-stack depth, step, and MATL ROI layout
+live in the Fluoview protocol — Python does not set them here.
 """
 
 from __future__ import annotations
@@ -377,7 +377,7 @@ def acquire_single_fov(
             print(f"Laser never reached {target_status!r}{why}")
             return False
 
-        # Open shutter then start immediately (do not wait for an APE shutter ACK).
+        # Open shutter (150 ms settle, no ACK wait) then start Olympus.
         laser.shutter(True)
         path = olympus.start_single()
         valid = append_readouts()
@@ -500,7 +500,7 @@ def acquire_matl(
             print(f"Laser never reached {target_status!r}{why}")
             return False
 
-        # Progress query with shutter closed; then open shutter and start immediately.
+        # Progress query with shutter closed; then open shutter and start.
         progress = olympus.matl_progress()
         laser.shutter(True)
         path = olympus.start_matl(progress=progress)

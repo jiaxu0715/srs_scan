@@ -33,6 +33,9 @@ DELAY_SLOPE = -10.181
 #DELAY_SLOPE = -1.6336
 DELAY_INTERCEPT = 16563
 #DELAY_INTERCEPT = 9527.2
+# Mechanical settle after System Shutter=1. Do not wait for a set ACK (that
+# can stall 5 s); this short sleep is enough for the blade before Fluoview starts.
+_SHUTTER_OPEN_SETTLE_S = 0.150
 
 
 def nm_to_tenths(wavelength_nm: float) -> int:
@@ -181,9 +184,9 @@ class Laser:
     def shutter(self, open_: bool) -> str:
         """Open/close the system shutter that gates excitation during acquisition.
 
-        Sends the set-command and returns immediately. APE often sends no ACK;
-        waiting for one parks the beam until the 5 s socket timeout, then
-        Fluoview start is delayed by that same gap.
+        Sends the set-command without waiting for an ACK (APE often sends none).
+        After open, wait ``_SHUTTER_OPEN_SETTLE_S`` so the blade is clear before
+        Fluoview Start. Close is send-only.
         """
         command = f"System Shutter={1 if open_ else 0}"
         if self.dry_run:
@@ -192,6 +195,8 @@ class Laser:
         if self.dev is None:
             raise RuntimeError("Laser is not connected")
         self.dev.send(command)
+        if open_:
+            time.sleep(_SHUTTER_OPEN_SETTLE_S)
         return "OK"
 
     def shutter_is_open(self) -> bool:
